@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher-Icon fuer den Klangraum: fuenf Pegelbalken wie eine stehende
+     Welle, der mittlere am hoechsten. 108x108, Motiv innerhalb von Radius 31
+     um die Mitte (54,54), damit die runde Launcher-Maske nichts abschneidet.
+     Hintergrundfarbe kommt per -IconBackground. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:fillColor="#2E8F86"
+        android:pathData="M30,47 a3,3 0 0 1 6,0 v14 a3,3 0 0 1 -6,0 z" />
+    <path android:fillColor="#3FB6A8"
+        android:pathData="M41,38 a3,3 0 0 1 6,0 v32 a3,3 0 0 1 -6,0 z" />
+    <path android:fillColor="#E8EDF2"
+        android:pathData="M51,29 a3,3 0 0 1 6,0 v50 a3,3 0 0 1 -6,0 z" />
+    <path android:fillColor="#3FB6A8"
+        android:pathData="M61,38 a3,3 0 0 1 6,0 v32 a3,3 0 0 1 -6,0 z" />
+    <path android:fillColor="#2E8F86"
+        android:pathData="M72,47 a3,3 0 0 1 6,0 v14 a3,3 0 0 1 -6,0 z" />
+</vector>

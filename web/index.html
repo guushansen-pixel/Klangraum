@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Klangraum</title>
+<style>
+:root {
+  --sat: env(safe-area-inset-top, 0px); --sab: env(safe-area-inset-bottom, 0px);
+  --bg: #12171E; --card: #1B222C; --line: #2A3441; --txt: #E8EDF2; --muted: #93A0AF;
+  --acc: #3FB6A8; --good: #4CC38A; --bad: #E5674F;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--txt);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+#app { max-width: 560px; margin: 0 auto; padding: calc(var(--sat) + 8px) 14px calc(var(--sab) + 28px); }
+header { display: flex; align-items: center; gap: 8px; height: 48px; }
+header h1 { font-size: 20px; margin: 0; flex: 1; }
+#back { background: none; border: 0; color: var(--txt); font-size: 30px; line-height: 1; padding: 0 12px 4px 0; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 10px 0; }
+.card.off { opacity: .62; }
+.card h2 { font-size: 13px; margin: 0 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.muted { color: var(--muted); } .small { font-size: 13px; } .bad { color: var(--bad); }
+button, .chip { font: inherit; color: var(--txt); background: #26303D; border: 1px solid var(--line); border-radius: 11px; padding: 9px 12px; }
+button.primary { background: var(--acc); border-color: var(--acc); color: #06201D; font-weight: 700; }
+button.block { display: block; width: 100%; margin-top: 8px; }
+button.ghost { background: none; }
+#play { width: 100%; padding: 18px; font-size: 20px; border-radius: 16px; }
+.chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.chip.on { background: var(--acc); border-color: var(--acc); color: #06201D; font-weight: 600; }
+.row { display: flex; gap: 10px; align-items: center; } .row > .grow { flex: 1; }
+.lname { font-weight: 600; flex: 1; }
+label.f { display: block; margin: 8px 0 2px; font-size: 13px; color: var(--muted); }
+input[type=range] { width: 100%; accent-color: var(--acc); margin: 0; height: 30px; }
+input[type=text] { font: inherit; color: var(--txt); background: #0E1319; border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; width: 100%; }
+/* Schalter */
+.sw { position: relative; width: 50px; height: 30px; flex: 0 0 auto; }
+.sw input { opacity: 0; width: 100%; height: 100%; margin: 0; position: absolute; z-index: 1; }
+.sw i { position: absolute; inset: 0; background: #0E1319; border: 1px solid var(--line); border-radius: 15px; }
+.sw i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--muted); transition: transform .15s; }
+.sw input:checked + i { background: var(--acc); border-color: var(--acc); }
+.sw input:checked + i::after { transform: translateX(20px); background: #06201D; }
+ul { margin: 6px 0; padding-left: 20px; } li { margin: 4px 0; }
+#night { position: fixed; inset: 0; z-index: 30; background: #000; color: #2a2a2a; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 14px; }
+#night[hidden], #modal[hidden] { display: none; }
+#modal { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.6); display: flex; align-items: flex-end; justify-content: center; }
+#modal > div { background: var(--card); width: 100%; max-width: 560px; border-radius: 16px 16px 0 0; padding: 16px 16px calc(var(--sab) + 16px); }
+#modal h3 { margin: 0 0 8px; }
+.btns { display: flex; gap: 8px; margin-top: 12px; } .btns button { flex: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header><button id="back" aria-label="Zurück">‹</button><h1 id="title">Klangraum</h1></header>
+  <main id="view"></main>
+</div>
+<div id="night" hidden><div id="night-t"></div></div>
+<div id="modal" hidden><div id="modal-in"></div></div>
+
+<script>
+'use strict';
+// =====================================================================
+// Klangraum: Klanglandschaften, die das Handy live erzeugt (Web Audio),
+// ohne eine einzige Audiodatei. Sechs Ebenen, die sich mischen lassen.
+// Aufbau: Daten -> Klangbausteine (rein) -> Ebenen -> Wiedergabe
+//         -> Ansichten -> Selbsttest (krTests, ?debug=1). Details: README.md.
+// =====================================================================
+const $ = id => document.getElementById(id);
+const NATIVE = window.KrAndroid;
+
+// ---------------------------------------------------------------- Klangbausteine
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+// Regler 0..1 -> Verstaerkung. Quadratisch, weil das Ohr Lautstaerke nicht linear hoert.
+function volGain(v) { return clamp(v, 0, 1) * clamp(v, 0, 1); }
+// Regler 0..1 -> Grenzfrequenz 200..12000 Hz (gleichmaessig in Oktaven).
+function tonToHz(t) { return 200 * Math.pow(60, clamp(t, 0, 1)); }
+function midiHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+const PENTA = [0, 2, 4, 7, 9, 12, 14, 16];        // Dur-Pentatonik ueber dem Grundton
+function bellHz(root, step) { return root * 4 * Math.pow(2, PENTA[step % PENTA.length] / 12); }
+// Ausblenden am Ende des Timers: in der letzten Minute linear auf 0.
+function timerGain(remainSec, vol) { return remainSec <= 0 ? 0 : vol * Math.min(1, remainSec / 60); }
+// Rauschen als Schleife: n Werte, an der Nahtstelle ueberblendet, auf gleiche Lautheit gebracht.
+// weiss = alle Frequenzen gleich, rosa = hoehenaermer, braun = dumpf und tief.
+function noiseData(type, n, rnd) {
+  const F = Math.min(4096, n >> 2), x = new Float32Array(n + F);
+  let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, last = 0;
+  for (let i = 0; i < x.length; i++) {
+    const w = rnd() * 2 - 1;
+    if (type === 'rosa') {            // Filter nach Paul Kellet
+      b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.96900 * b2 + w * 0.1538520;
+      b3 = 0.86650 * b3 + w * 0.3104856; b4 = 0.55000 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.0168980;
+      x[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362; b6 = w * 0.115926;
+    } else if (type === 'braun') { last = (last + 0.02 * w) / 1.02; x[i] = last; }
+    else x[i] = w;
+  }
+  const y = new Float32Array(n);
+  for (let i = 0; i < n; i++) y[i] = x[i];
+  for (let i = 0; i < F; i++) { const a = i / F; y[i] = x[i] * Math.sqrt(a) + x[n + i] * Math.sqrt(1 - a); }
+  let s = 0, m = 0; for (let i = 0; i < n; i++) m += y[i]; m /= n;
+  for (let i = 0; i < n; i++) { y[i] -= m; s += y[i] * y[i]; }
+  const k = 0.2 / Math.sqrt(s / n || 1);
+  for (let i = 0; i < n; i++) y[i] = clamp(y[i] * k, -1, 1);
+  return y;
+}
+const noiseCache = new WeakMap();
+function noiseBuffer(ac, type) {
+  let c = noiseCache.get(ac); if (!c) { c = {}; noiseCache.set(ac, c); }
+  if (!c[type]) {
+    const n = Math.floor(ac.sampleRate * 6), buf = ac.createBuffer(2, n, ac.sampleRate);
+    buf.copyToChannel(noiseData(type, n, Math.random), 0); buf.copyToChannel(noiseData(type, n, Math.random), 1);
+    c[type] = buf;
+  }
+  return c[type];
+}
+
+// ---------------------------------------------------------------- Ebenen
+// Jede Ebene: build(ac, out, p, ctx) -> {update(p), tick(now)?, stop()}.
+// ac darf auch ein OfflineAudioContext sein (Selbsttest). ctx.root() liefert den Grundton.
+function loopSource(ac, type) { const s = ac.createBufferSource(); s.buffer = noiseBuffer(ac, type); s.loop = true; s.start(0, Math.random() * 5); return s; }
+function fadeOut(ac, g, srcs) {
+  g.gain.cancelScheduledValues(ac.currentTime); g.gain.setTargetAtTime(0, ac.currentTime, 0.12);
+  setTimeout(() => { srcs.forEach(s => { try { s.stop(); } catch (e) {} try { s.disconnect(); } catch (e) {} }); try { g.disconnect(); } catch (e) {} }, 900);
+}
+function setP(param, v, ac, tc) { param.setTargetAtTime(v, ac.currentTime, tc || 0.1); }
+const ROOTS = [['C', 36], ['D', 38], ['E', 40], ['G', 43], ['A', 45]];
+const BEATS = [[2, 'Delta 2 Hz'], [6, 'Theta 6 Hz'], [10, 'Alpha 10 Hz'], [16, 'Beta 16 Hz']];
+const LAYERS = {
+  noise: { name: 'Rauschen', def: { on: false, vol: 0.5, farbe: 'braun', ton: 0.55 },
+    build(ac, out, p) {
+      const g = ac.createGain(), f = ac.createBiquadFilter(); f.type = 'lowpass'; g.gain.value = 0; f.connect(g); g.connect(out);
+      let src = null, farbe = null;
+      const L = { update(q) {
+        p = q;
+        if (p.farbe !== farbe) { if (src) { try { src.stop(); } catch (e) {} src.disconnect(); } src = loopSource(ac, p.farbe); src.connect(f); farbe = p.farbe; }
+        setP(f.frequency, tonToHz(p.ton), ac); setP(g.gain, volGain(p.vol) * 1.4, ac);
+      }, stop() { fadeOut(ac, g, [src]); } };
+      L.update(p); return L;
+    } },
+  regen: { name: 'Regen', def: { on: false, vol: 0.5, staerke: 0.5 },
+    build(ac, out, p) {
+      const g = ac.createGain(), hp = ac.createBiquadFilter(), gh = ac.createGain(), src = loopSource(ac, 'rosa');
+      hp.type = 'highpass'; hp.frequency.value = 1500; g.gain.value = 0; src.connect(hp); hp.connect(gh); gh.connect(g); g.connect(out);
+      let next = 0;
+      const L = { update(q) { p = q; setP(gh.gain, 0.3 + 1.1 * p.staerke, ac); setP(g.gain, volGain(p.vol), ac); },
+        // Einzelne Tropfen: kurze, hell gefilterte Rauschstoesse an zufaelligen Stellen im Stereobild.
+        tick(now) {
+          if (next < now) next = now;
+          while (next < now + 0.3) {
+            const d = ac.createBufferSource(), bp = ac.createBiquadFilter(), e = ac.createGain(), len = 0.03 + Math.random() * 0.06;
+            d.buffer = noiseBuffer(ac, 'weiss'); bp.type = 'bandpass'; bp.frequency.value = 1800 + Math.random() * 5500; bp.Q.value = 1.5 + Math.random() * 3;
+            e.gain.setValueAtTime(0, next); e.gain.linearRampToValueAtTime(0.25 + Math.random() * 0.6, next + 0.003); e.gain.exponentialRampToValueAtTime(0.001, next + len);
+            d.connect(bp); bp.connect(e);
+            if (ac.createStereoPanner) { const pan = ac.createStereoPanner(); pan.pan.value = Math.random() * 2 - 1; e.connect(pan); pan.connect(g); } else e.connect(g);
+            d.start(next, Math.random() * 5, len + 0.02);
+            next += -Math.log(1 - Math.random()) / (3 + 45 * p.staerke);
+          }
+        }, stop() { fadeOut(ac, g, [src]); } };
+      L.update(p); return L;
+    } },
+  wellen: { name: 'Wellen', def: { on: false, vol: 0.6, tempo: 0.4 },
+    build(ac, out, p) {
+      const g = ac.createGain(), f = ac.createBiquadFilter(), gw = ac.createGain(), src = loopSource(ac, 'braun');
+      const l1 = ac.createOscillator(), l2 = ac.createOscillator(), a1 = ac.createGain(), a2 = ac.createGain(), af = ac.createGain();
+      f.type = 'lowpass'; f.frequency.value = 650; gw.gain.value = 0.5; g.gain.value = 0; a1.gain.value = 0.3; a2.gain.value = 0.15; af.gain.value = 350;
+      src.connect(f); f.connect(gw); gw.connect(g); g.connect(out);
+      l1.connect(a1); l2.connect(a2); a1.connect(gw.gain); a2.connect(gw.gain); l1.connect(af); af.connect(f.frequency); l1.start(); l2.start();
+      const L = { update(q) { p = q; const per = 14 - 8 * p.tempo; setP(l1.frequency, 1 / per, ac); setP(l2.frequency, 1 / (per * 1.37), ac); setP(g.gain, volGain(p.vol) * 2.4, ac); },
+        stop() { fadeOut(ac, g, [src, l1, l2]); } };
+      L.update(p); return L;
+    } },
+  drone: { name: 'Klangteppich', def: { on: false, vol: 0.5, root: 45, hell: 0.3 },
+    build(ac, out, p) {
+      const g = ac.createGain(), f = ac.createBiquadFilter(), lfo = ac.createOscillator(), la = ac.createGain();
+      f.type = 'lowpass'; g.gain.value = 0; lfo.frequency.value = 0.07; la.gain.value = 120; lfo.connect(la); la.connect(f.frequency); lfo.start(); f.connect(g); g.connect(out);
+      const parts = [[1, 'sine', 0.5], [1.003, 'triangle', 0.22], [1.5, 'sine', 0.2], [2, 'sine', 0.13]].map(d => {
+        const o = ac.createOscillator(), a = ac.createGain(); o.type = d[1]; a.gain.value = d[2]; o.frequency.value = midiHz(p.root) * d[0]; o.connect(a); a.connect(f); o.start(); return { o, mult: d[0] };
+      });
+      const L = { update(q) { p = q; parts.forEach(x => setP(x.o.frequency, midiHz(p.root) * x.mult, ac, 0.4)); setP(f.frequency, 300 + 2200 * p.hell, ac); setP(g.gain, volGain(p.vol) * 0.7, ac); },
+        stop() { fadeOut(ac, g, parts.map(x => x.o).concat([lfo])); } };
+      L.update(p); return L;
+    } },
+  glocken: { name: 'Glocken', def: { on: false, vol: 0.5, dichte: 0.4 },
+    build(ac, out, p, ctx) {
+      const g = ac.createGain(), dl = ac.createDelay(1), fb = ac.createGain(), lp = ac.createBiquadFilter();
+      g.gain.value = 0; dl.delayTime.value = 0.37; fb.gain.value = 0.42; lp.type = 'lowpass'; lp.frequency.value = 2600;
+      dl.connect(fb); fb.connect(dl); dl.connect(lp); lp.connect(g); g.connect(out);
+      let next = 0;
+      const L = { update(q) { p = q; setP(g.gain, volGain(p.vol) * 0.8, ac); },
+        tick(now) {
+          if (next < now) next = now + 0.2;
+          while (next < now + 0.3) {
+            const hz = bellHz(midiHz(ctx.root()), Math.floor(Math.random() * PENTA.length)), e = ac.createGain(), dec = 2 + Math.random() * 2.5;
+            e.gain.setValueAtTime(0, next); e.gain.linearRampToValueAtTime(0.22 + Math.random() * 0.2, next + 0.012); e.gain.exponentialRampToValueAtTime(0.0008, next + dec);
+            [[1, 1], [2.005, 0.16]].forEach(h => { const o = ac.createOscillator(), a = ac.createGain(); o.frequency.value = hz * h[0]; a.gain.value = h[1]; o.connect(a); a.connect(e); o.start(next); o.stop(next + dec + 0.05); });
+            e.connect(g); e.connect(dl);
+            next += (6 - 5 * p.dichte) * (0.4 + Math.random() * 1.2);
+          }
+        }, stop() { fadeOut(ac, g, []); } };
+      L.update(p); return L;
+    } },
+  binaural: { name: 'Binaurale Beats', def: { on: false, vol: 0.4, beat: 6 },
+    build(ac, out, p) {
+      const g = ac.createGain(), m = ac.createChannelMerger(2), l = ac.createOscillator(), r = ac.createOscillator();
+      g.gain.value = 0; l.frequency.value = 180; l.connect(m, 0, 0); r.connect(m, 0, 1); m.connect(g); g.connect(out); l.start(); r.start();
+      const L = { update(q) { p = q; setP(r.frequency, 180 + p.beat, ac); setP(g.gain, volGain(p.vol) * 0.45, ac); }, stop() { fadeOut(ac, g, [l, r]); } };
+      L.update(p); return L;
+    } },
+};
+const ORDER = ['noise', 'regen', 'wellen', 'drone', 'glocken', 'binaural'];
+// Mischpult-Ausgang: Begrenzer, damit mehrere laute Ebenen nicht uebersteuern.
+function makeMaster(ac) {
+  const g = ac.createGain(), c = ac.createDynamicsCompressor();
+  c.threshold.value = -12; c.knee.value = 10; c.ratio.value = 12; c.attack.value = 0.01; c.release.value = 0.3;
+  // Der Kompressor regelt nur nach; die Kennlinie dahinter ist die harte Grenze
+  // (weich bis 0,98, darueber abgeschnitten), damit nichts verzerrt aus dem Lautsprecher kommt.
+  const sh = ac.createWaveShaper(), curve = new Float32Array(2049);
+  for (let i = 0; i < curve.length; i++) { const x = i / 1024 - 1; curve[i] = 0.98 * Math.tanh(1.6 * x) / Math.tanh(1.6); }
+  sh.curve = curve;
+  g.gain.value = 0; g.connect(c); c.connect(sh); sh.connect(ac.destination); return g;
+}
+
+// ---------------------------------------------------------------- Daten
+const K = { set: 'klangraum.settings.v1' };
+function defLayers() { const o = {}; ORDER.forEach(id => { o[id] = Object.assign({}, LAYERS[id].def); }); return o; }
+// Mischung aus einer Kurzform bauen: nur genannte Ebenen sind an.
+function mix(spec) { const o = defLayers(); Object.keys(spec).forEach(id => { Object.assign(o[id], spec[id], { on: true }); }); return o; }
+const PRESETS = [
+  { name: 'Schlaf', layers: mix({ noise: { vol: 0.45, farbe: 'braun', ton: 0.45 }, wellen: { vol: 0.55, tempo: 0.25 } }) },
+  { name: 'Regen', layers: mix({ regen: { vol: 0.6, staerke: 0.55 }, noise: { vol: 0.3, farbe: 'braun', ton: 0.35 } }) },
+  { name: 'Fokus', layers: mix({ noise: { vol: 0.5, farbe: 'rosa', ton: 0.6 }, binaural: { vol: 0.3, beat: 16 } }) },
+  { name: 'Meditation', layers: mix({ drone: { vol: 0.5, root: 45, hell: 0.3 }, glocken: { vol: 0.45, dichte: 0.35 }, binaural: { vol: 0.25, beat: 6 } }) },
+  { name: 'Meer', layers: mix({ wellen: { vol: 0.75, tempo: 0.45 }, glocken: { vol: 0.25, dichte: 0.15 } }) }];
+const DEFAULT_SETTINGS = { schema: 1, vol: 0.7, timerMin: 0, layers: PRESETS[0].layers, own: [] };
+function load(k, fb) { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? fb : v; } catch (e) { return fb; } }
+let saveOk = true;
+function save() { try { localStorage.setItem(K.set, JSON.stringify(S)); } catch (e) { saveOk = false; } }
+// Gespeicherte Mischung mit den Vorgaben auffuellen (neue Ebenen oder Regler nach einem Update).
+function normLayers(l) { const o = defLayers(); ORDER.forEach(id => { if (l && l[id]) Object.assign(o[id], l[id]); }); return o; }
+const S = Object.assign({}, DEFAULT_SETTINGS, load(K.set, {}));
+S.layers = normLayers(S.layers); S.own = (S.own || []).map(p => ({ name: String(p.name), layers: normLayers(p.layers) }));
+
+// ---------------------------------------------------------------- Wiedergabe
+const E = { ac: null, master: null, live: {}, playing: false, timer: 0, end: 0, stopTo: 0 };
+const ctxApi = { root: () => S.layers.drone.root };
+function applyLayer(id) {
+  const p = S.layers[id];
+  if (E.playing && p.on) { if (E.live[id]) E.live[id].update(p); else E.live[id] = LAYERS[id].build(E.ac, E.master, p, ctxApi); }
+  else if (E.live[id]) { E.live[id].stop(); delete E.live[id]; }
+}
+function tick() {
+  if (!E.playing) return;
+  const now = E.ac.currentTime; Object.keys(E.live).forEach(id => { if (E.live[id].tick) E.live[id].tick(now); });
+  let v = S.vol;
+  if (E.end) { const rem = (E.end - Date.now()) / 1000; if (rem <= 0) { stop(); return; } v = timerGain(rem, S.vol); updateStatus(); }
+  E.master.gain.setTargetAtTime(volGain(v), now, 0.3);
+}
+function play() {
+  clearTimeout(E.stopTo);
+  if (!E.ac) { E.ac = new (window.AudioContext || window.webkitAudioContext)(); E.master = makeMaster(E.ac); }
+  if (E.ac.state !== 'running') E.ac.resume();
+  E.playing = true; E.end = S.timerMin ? Date.now() + S.timerMin * 60000 : 0;
+  ORDER.forEach(applyLayer); clearInterval(E.timer); E.timer = setInterval(tick, 100); tick();
+  if (NATIVE && NATIVE.setKeepScreenOn) NATIVE.setKeepScreenOn(true);
+  updateStatus();
+}
+function stop() {
+  if (!E.playing) return;
+  E.playing = false; clearInterval(E.timer); E.end = 0;
+  E.master.gain.cancelScheduledValues(E.ac.currentTime); E.master.gain.setTargetAtTime(0, E.ac.currentTime, 0.15);
+  E.stopTo = setTimeout(() => { ORDER.forEach(applyLayer); if (!E.playing) E.ac.suspend(); }, 700);
+  if (NATIVE && NATIVE.setKeepScreenOn) NATIVE.setKeepScreenOn(false);
+  if (!$('night').hidden) nightOff();
+  updateStatus();
+}
+function fmtClock(sec) { sec = Math.max(0, Math.ceil(sec)); return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'); }
+function updateStatus() {
+  const b = $('play'); if (b) { b.textContent = E.playing ? '⏸  Stopp' : '▶  Start'; b.className = E.playing ? '' : 'primary'; }
+  const st = $('status');
+  if (st) st.textContent = !E.playing ? (anyOn() ? '' : 'Schalte mindestens eine Ebene ein.') : E.end ? 'Timer: noch ' + fmtClock((E.end - Date.now()) / 1000) : 'läuft ohne Timer';
+  if (!$('night').hidden) $('night-t').textContent = E.end ? fmtClock((E.end - Date.now()) / 1000) : '';
+}
+function anyOn() { return ORDER.some(id => S.layers[id].on); }
+// Nachtbildschirm: schwarz und so dunkel wie moeglich, das Display bleibt aber an.
+function nightOn() { $('night').hidden = false; if (NATIVE && NATIVE.setBrightness) NATIVE.setBrightness(0.01); updateStatus(); location.hash = 'night'; }
+function nightOff() { $('night').hidden = true; if (NATIVE && NATIVE.setBrightness) NATIVE.setBrightness(-1); }
+$('night').onclick = () => history.back();
+
+// ---------------------------------------------------------------- Ansichten
+const view = $('view'), VIEWS = {};
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function slider(id, key, label, v) { return '<label class="f">' + label + '</label><input type="range" min="0" max="1" step="0.01" value="' + v + '" data-l="' + id + '" data-k="' + key + '">'; }
+function chips(id, key, opts, cur) { return '<div class="chips" style="margin-top:8px">' + opts.map(o => '<button class="chip' + (o[0] === cur ? ' on' : '') + '" data-l="' + id + '" data-k="' + key + '" data-v="' + o[0] + '">' + o[1] + '</button>').join('') + '</div>'; }
+function layerControls(id, p) {
+  let h = slider(id, 'vol', 'Lautstärke', p.vol);
+  if (id === 'noise') h += chips(id, 'farbe', [['weiss', 'weiß'], ['rosa', 'rosa'], ['braun', 'braun']], p.farbe) + slider(id, 'ton', 'dumpf – hell', p.ton);
+  if (id === 'regen') h += slider(id, 'staerke', 'Niesel – Schauer', p.staerke);
+  if (id === 'wellen') h += slider(id, 'tempo', 'langsam – schnell', p.tempo);
+  if (id === 'drone') h += chips(id, 'root', ROOTS.map(r => [r[1], r[0]]), p.root) + slider(id, 'hell', 'dunkel – hell', p.hell);
+  if (id === 'glocken') h += slider(id, 'dichte', 'selten – oft', p.dichte);
+  if (id === 'binaural') h += chips(id, 'beat', BEATS, p.beat) + '<div class="muted small" style="margin-top:6px">Wirkt nur mit Kopfhörern.</div>';
+  return h;
+}
+function sameMix(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+VIEWS.home = () => {
+  let h = '';
+  if (!saveOk) h += '<div class="card small bad">Einstellungen ließen sich nicht speichern.</div>';
+  if (window.KR_TEST) h += '<div class="card small" id="selftest">Selbsttest: ' + KR_TEST.ok + ' OK, ' + KR_TEST.fail + ' Fehler</div>';
+  h += '<div class="card"><button id="play"></button><div class="muted small" id="status" style="margin-top:8px;min-height:20px"></div>' +
+    '<label class="f">Gesamtlautstärke</label><input type="range" id="vol" min="0" max="1" step="0.01" value="' + S.vol + '"></div>';
+  h += '<div class="card"><h2>Mischungen</h2><div class="chips">' +
+    PRESETS.map((p, i) => '<button class="chip' + (sameMix(p.layers, S.layers) ? ' on' : '') + '" data-p="b' + i + '">' + p.name + '</button>').join('') +
+    S.own.map((p, i) => '<button class="chip' + (sameMix(p.layers, S.layers) ? ' on' : '') + '" data-p="o' + i + '">' + esc(p.name) + '</button>').join('') +
+    '<button class="chip" id="p-save">+ Speichern</button></div>' + (S.own.length ? '<button class="ghost small block" id="p-edit">Eigene Mischungen verwalten</button>' : '') + '</div>';
+  h += '<div class="card"><h2>Einschlaf-Timer</h2><div class="chips">' + [0, 15, 30, 45, 60, 90].map(m => '<button class="chip' + (S.timerMin === m ? ' on' : '') + '" data-t="' + m + '">' + (m ? m + ' min' : 'aus') + '</button>').join('') +
+    '</div><div class="muted small" style="margin-top:6px">In der letzten Minute wird der Klang langsam leiser.</div></div>';
+  ORDER.forEach(id => { const p = S.layers[id];
+    h += '<div class="card' + (p.on ? '' : ' off') + '" id="c-' + id + '"><div class="row"><span class="lname">' + LAYERS[id].name + '</span><label class="sw"><input type="checkbox" data-on="' + id + '"' + (p.on ? ' checked' : '') + '><i></i></label></div>' +
+      (p.on ? layerControls(id, p) : '') + '</div>'; });
+  h += '<div class="row"><button class="grow" id="h-night">Nachtbildschirm</button><button class="grow" id="h-info">Info</button></div>';
+  view.innerHTML = h; updateStatus();
+};
+// Ein Klick-/Eingabe-Verteiler fuer die ganze Startseite.
+view.addEventListener('input', e => {
+  const el = e.target;
+  if (el.id === 'vol') { S.vol = +el.value; save(); if (E.playing) tick(); return; }
+  if (el.dataset.l && el.type === 'range') { S.layers[el.dataset.l][el.dataset.k] = +el.value; save(); applyLayer(el.dataset.l); markPresets(); }
+});
+view.addEventListener('change', e => {
+  const id = e.target.dataset.on; if (!id) return;
+  S.layers[id].on = e.target.checked; save(); applyLayer(id); render('home');
+});
+view.addEventListener('click', e => {
+  const el = e.target.closest('button'); if (!el) return;
+  if (el.id === 'play') { if (E.playing) stop(); else if (anyOn()) play(); else updateStatus(); return; }
+  if (el.id === 'h-night') { nightOn(); return; }
+  if (el.id === 'h-info') { location.hash = 'info'; return; }
+  if (el.id === 'p-save') { saveDialog(); return; }
+  if (el.id === 'p-edit') { editDialog(); return; }
+  if (el.dataset.t !== undefined) { S.timerMin = +el.dataset.t; save(); if (E.playing) E.end = S.timerMin ? Date.now() + S.timerMin * 60000 : 0; render('home'); return; }
+  if (el.dataset.p) { const p = el.dataset.p[0] === 'b' ? PRESETS[+el.dataset.p.slice(1)] : S.own[+el.dataset.p.slice(1)]; if (p) { S.layers = normLayers(p.layers); save(); ORDER.forEach(applyLayer); render('home'); } return; }
+  if (el.dataset.l) { const k = el.dataset.k, v = el.dataset.v; S.layers[el.dataset.l][k] = (k === 'farbe') ? v : +v; save(); applyLayer(el.dataset.l); if (k === 'root') applyLayer('glocken'); render('home'); }
+});
+function markPresets() { view.querySelectorAll('[data-p]').forEach(b => { const p = b.dataset.p[0] === 'b' ? PRESETS[+b.dataset.p.slice(1)] : S.own[+b.dataset.p.slice(1)]; b.classList.toggle('on', !!p && sameMix(p.layers, S.layers)); }); }
+function openModal(html, init) { $('modal-in').innerHTML = html; $('modal').hidden = false; init && init(); }
+function closeModal() { $('modal').hidden = true; }
+$('modal').onclick = e => { if (e.target === $('modal')) closeModal(); };
+function saveDialog() {
+  openModal('<h3>Mischung speichern</h3><input type="text" id="m-name" placeholder="Name" maxlength="24"><div class="btns"><button class="ghost" id="m-x">Abbrechen</button><button class="primary" id="m-ok">Speichern</button></div>', () => {
+    $('m-x').onclick = closeModal;
+    $('m-ok').onclick = () => { const n = $('m-name').value.trim(); if (!n) return; S.own = S.own.filter(p => p.name !== n); S.own.push({ name: n, layers: JSON.parse(JSON.stringify(S.layers)) }); save(); closeModal(); render('home'); };
+  });
+}
+function editDialog() {
+  openModal('<h3>Eigene Mischungen</h3>' + S.own.map((p, i) => '<div class="row" style="margin-top:8px"><span class="grow">' + esc(p.name) + '</span><button data-d="' + i + '">Löschen</button></div>').join('') +
+    '<div class="btns"><button class="ghost" id="m-x">Schließen</button></div>', () => {
+    $('m-x').onclick = closeModal;
+    $('modal-in').querySelectorAll('[data-d]').forEach(b => b.onclick = () => { S.own.splice(+b.dataset.d, 1); save(); closeModal(); render('home'); });
+  });
+}
+VIEWS.info = () => {
+  view.innerHTML = '<div class="card"><h2>Die Ebenen</h2><ul class="small">' +
+    '<li><b>Rauschen:</b> gleichmäßiger Klangvorhang, der Störgeräusche überdeckt. Braun ist dumpf und tief, rosa ausgewogen, weiß hell.</li>' +
+    '<li><b>Regen:</b> Rauschen mit einzelnen Tropfen, von Niesel bis Schauer.</li>' +
+    '<li><b>Wellen:</b> ein Rauschen, das wie Brandung an- und abschwillt.</li>' +
+    '<li><b>Klangteppich:</b> ein tiefer, stehender Akkord in einer Tonart deiner Wahl.</li>' +
+    '<li><b>Glocken:</b> einzelne helle Töne in zufälliger Folge, passend zum Klangteppich.</li>' +
+    '<li><b>Binaurale Beats:</b> zwei leicht verschiedene Töne, einer pro Ohr. Nur mit Kopfhörern.</li></ul>' +
+    '<div class="small muted">Alles wird im Moment des Abspielens berechnet. Deshalb wiederholt sich nichts, und die App braucht keine Audiodateien und kein Internet.</div></div>' +
+    '<div class="card"><h2>Gut zu wissen</h2><ul class="small">' +
+    '<li>Zum Einschlafen leise stellen. Dauerhaft lautes Rauschen über Kopfhörer kann dem Gehör schaden.</li>' +
+    '<li>Der Nachtbildschirm macht das Display schwarz und dunkel; Tippen beendet ihn. Der Klang läuft, solange die App geöffnet ist.</li>' +
+    '<li>Ob der Klang bei ausgeschaltetem Display weiterläuft, hängt vom Handy ab. Verlass dich fürs Einschlafen auf den Nachtbildschirm.</li>' +
+    '<li>Für binaurale Beats ist die Studienlage dünn und uneinheitlich. Sieh sie als angenehmen Klang, nicht als Mittel mit sicherer Wirkung. Bei Epilepsie vorher ärztlich nachfragen.</li></ul></div>' +
+    '<div class="muted small">Klangraum v1.0</div>';
+};
+function render(name) {
+  if (!VIEWS[name]) name = 'home';
+  $('title').textContent = name === 'info' ? 'Info' : 'Klangraum'; $('back').style.visibility = name === 'home' ? 'hidden' : 'visible';
+  VIEWS[name](); if (name !== 'home') window.scrollTo(0, 0);
+}
+function route() {
+  const h = (location.hash || '#home').slice(1);
+  if (h !== 'night' && !$('night').hidden) nightOff();
+  if (h === 'night') { if ($('night').hidden) { history.replaceState(null, '', '#home'); render('home'); } return; }
+  render(h);
+}
+$('back').onclick = () => history.back();
+window.addEventListener('hashchange', route);
+
+// ---------------------------------------------------------------- Selbsttest
+async function krTests() {
+  let ok = 0, fail = 0;
+  const t = (name, cond, info) => { if (cond) { ok++; console.log('OK   ' + name + (info !== undefined ? ' (' + info + ')' : '')); } else { fail++; console.error('FAIL ' + name + (info !== undefined ? ' -> ' + info : '')); } };
+  let seed = 99; const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let x = Math.imul(seed ^ seed >>> 15, 1 | seed); x = x + Math.imul(x ^ x >>> 7, 61 | x) ^ x; return ((x ^ x >>> 14) >>> 0) / 4294967296; };
+  const stat = a => { let s = 0, pk = 0, bad = 0; for (let i = 0; i < a.length; i++) { if (!isFinite(a[i])) bad++; s += a[i] * a[i]; pk = Math.max(pk, Math.abs(a[i])); } return { rms: Math.sqrt(s / a.length), peak: pk, bad }; };
+  const ac1 = a => { let n = 0, d = 0; for (let i = 1; i < a.length; i++) { n += a[i] * a[i - 1]; d += a[i] * a[i]; } return n / d; };
+
+  t('volGain quadratisch', volGain(0.5) === 0.25 && volGain(2) === 1 && volGain(-1) === 0);
+  t('tonToHz 200..12000', Math.abs(tonToHz(0) - 200) < 1e-9 && Math.abs(tonToHz(1) - 12000) < 1e-6);
+  t('midiHz', Math.abs(midiHz(69) - 440) < 1e-9 && Math.abs(midiHz(45) - 110) < 1e-9);
+  t('bellHz: zwei Oktaven ueber dem Grundton, Pentatonik', Math.abs(bellHz(110, 0) - 440) < 1e-9 && Math.abs(bellHz(110, 3) - 440 * Math.pow(2, 7 / 12)) < 1e-9);
+  t('timerGain: letzte Minute linear', timerGain(120, 0.8) === 0.8 && timerGain(30, 0.8) === 0.4 && timerGain(0, 0.8) === 0);
+  t('fmtClock', fmtClock(125) === '2:05' && fmtClock(-3) === '0:00');
+  const N = 48000, w = noiseData('weiss', N, rnd), pk = noiseData('rosa', N, rnd), br = noiseData('braun', N, rnd);
+  [['weiss', w], ['rosa', pk], ['braun', br]].forEach(x => { const s = stat(x[1]); t('Rauschen ' + x[0] + ': Pegel und Grenzen', s.bad === 0 && s.peak <= 1 && Math.abs(s.rms - 0.2) < 0.02, s.rms.toFixed(3) + ' / ' + s.peak.toFixed(2)); });
+  const cw = ac1(w), cp = ac1(pk), cb = ac1(br);
+  t('weiss ist unkorreliert, rosa dunkler, braun am dunkelsten', Math.abs(cw) < 0.05 && cp > 0.3 && cb > 0.97 && cb > cp, [cw, cp, cb].map(v => v.toFixed(3)).join(' / '));
+  // Naht der Schleife: der Sprung vom letzten zum ersten Wert darf nicht groesser sein als uebliche Schritte im Signal.
+  let stepSq = 0; for (let i = 1; i < N; i++) stepSq += (br[i] - br[i - 1]) * (br[i] - br[i - 1]);
+  const stepRms = Math.sqrt(stepSq / (N - 1)), seam = Math.abs(br[0] - br[N - 1]);
+  t('braun: Schleife ohne Sprung an der Naht', seam < 4 * stepRms, seam.toFixed(4) + ' bei ueblichem Schritt ' + stepRms.toFixed(4));
+  t('Mischungen kennen nur vorhandene Ebenen und Regler', PRESETS.every(p => ORDER.every(id => Object.keys(p.layers[id]).sort().join() === Object.keys(LAYERS[id].def).sort().join())) && PRESETS.every(p => ORDER.some(id => p.layers[id].on)));
+  t('normLayers fuellt fehlende Regler auf', normLayers({ noise: { on: true } }).noise.ton === 0.55 && normLayers(null).regen.on === false);
+
+  // Jede Ebene und jede Mischung 4 s lang ohne Lautsprecher rendern und pruefen.
+  const Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!Off) { t('Offline-Rendering verfuegbar', false); return { ok, fail }; }
+  const renderMix = async layers => {
+    const ac = new Off(2, 44100 * 4, 44100), master = makeMaster(ac); master.gain.value = 1;
+    const live = ORDER.filter(id => layers[id].on).map(id => LAYERS[id].build(ac, master, layers[id], { root: () => layers.drone.root }));
+    for (let tt = 0; tt < 4; tt += 0.25) live.forEach(l => { if (l.tick) l.tick(tt); });
+    const buf = await ac.startRendering(), a = buf.getChannelData(0), b = buf.getChannelData(1);
+    // erste Sekunde auslassen: die Ebenen blenden ein
+    return { l: stat(a.subarray(44100)), r: stat(b.subarray(44100)), diff: stat(a.subarray(44100).map((v, i) => v - b[44100 + i])) };
+  };
+  for (const id of ORDER) {
+    const lay = defLayers(); lay[id].on = true; lay[id].vol = 1;
+    let r = null, err = ''; try { r = await renderMix(lay); } catch (e) { err = e.message; }
+    t('Ebene ' + LAYERS[id].name + ': hoerbar, begrenzt, ohne Fehler', r && r.l.bad === 0 && r.r.bad === 0 && r.l.rms > 0.004 && r.l.peak < 1 && r.r.peak < 1, err || (r && r.l.rms.toFixed(3) + ' / ' + r.l.peak.toFixed(2)));
+    if (id === 'binaural') t('Binaurale Beats: links und rechts verschieden', r && r.diff.rms > 0.01, r && r.diff.rms.toFixed(3));
+  }
+  for (const p of PRESETS) {
+    let r = null, err = ''; try { r = await renderMix(p.layers); } catch (e) { err = e.message; }
+    t('Mischung ' + p.name + ': hoerbar und nicht uebersteuert', r && r.l.rms > 0.004 && r.l.peak < 0.99 && r.r.peak < 0.99, err || (r && r.l.rms.toFixed(3) + ' / ' + Math.max(r.l.peak, r.r.peak).toFixed(2)));
+  }
+  const all = defLayers(); ORDER.forEach(id => { all[id].on = true; all[id].vol = 1; });
+  let r = null; try { r = await renderMix(all); } catch (e) {}
+  t('alle Ebenen auf voller Lautstaerke: Begrenzer haelt', r && r.l.peak < 1 && r.r.peak < 1, r && Math.max(r.l.peak, r.r.peak).toFixed(2));
+  console.log('Selbsttest: ' + ok + ' OK, ' + fail + ' Fehler');
+  return { ok, fail };
+}
+window.krTests = krTests;
+(async () => {
+  if (/[?&]debug=1/.test(location.search)) window.KR_TEST = await krTests();
+  route();
+})();
+</script>
+</body>
+</html>
