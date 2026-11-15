@@ -77,6 +77,8 @@ function tonToHz(t) { return 200 * Math.pow(60, clamp(t, 0, 1)); }
 function midiHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
 const PENTA = [0, 2, 4, 7, 9, 12, 14, 16];        // Dur-Pentatonik ueber dem Grundton
 function bellHz(root, step) { return root * 4 * Math.pow(2, PENTA[step % PENTA.length] / 12); }
+// Binaurale Schwebung nach sec Sekunden: fest, oder linear von beat nach ziel in dauer Minuten.
+function beatAt(p, sec) { return p.dauer > 0 ? p.beat + (p.ziel - p.beat) * clamp(sec / (p.dauer * 60), 0, 1) : p.beat; }
 // Ausblenden am Ende des Timers: in der letzten Minute linear auf 0.
 function timerGain(remainSec, vol) { return remainSec <= 0 ? 0 : vol * Math.min(1, remainSec / 60); }
 // Rauschen als Schleife: n Werte, an der Nahtstelle ueberblendet, auf gleiche Lautheit gebracht.
@@ -123,7 +125,8 @@ function fadeOut(ac, g, srcs) {
 }
 function setP(param, v, ac, tc) { param.setTargetAtTime(v, ac.currentTime, tc || 0.1); }
 const ROOTS = [['C', 36], ['D', 38], ['E', 40], ['G', 43], ['A', 45]];
-const BEATS = [[2, 'Delta 2 Hz'], [6, 'Theta 6 Hz'], [10, 'Alpha 10 Hz'], [16, 'Beta 16 Hz']];
+const BEATS = [[2, 'Delta 2'], [6, 'Theta 6'], [10, 'Alpha 10'], [16, 'Beta 16'], [40, 'Gamma 40']];
+const GLIDES = [[0, 'fest'], [10, '10 min'], [20, '20 min'], [30, '30 min']];
 const LAYERS = {
   noise: { name: 'Rauschen', def: { on: false, vol: 0.5, farbe: 'braun', ton: 0.55 },
     build(ac, out, p) {
@@ -198,11 +201,22 @@ const LAYERS = {
         }, stop() { fadeOut(ac, g, []); } };
       L.update(p); return L;
     } },
-  binaural: { name: 'Binaurale Beats', def: { on: false, vol: 0.4, beat: 6 },
+  // beat = Schwebung am Anfang, traeger = Grundton, dauer > 0 = die Schwebung gleitet
+  // in so vielen Minuten zum Wert ziel (z. B. von 10 Hz auf 2 Hz zum Einschlafen).
+  binaural: { name: 'Binaurale Beats', def: { on: false, vol: 0.4, beat: 6, traeger: 180, ziel: 2, dauer: 0 },
     build(ac, out, p) {
       const g = ac.createGain(), m = ac.createChannelMerger(2), l = ac.createOscillator(), r = ac.createOscillator();
-      g.gain.value = 0; l.frequency.value = 180; l.connect(m, 0, 0); r.connect(m, 0, 1); m.connect(g); g.connect(out); l.start(); r.start();
-      const L = { update(q) { p = q; setP(r.frequency, 180 + p.beat, ac); setP(g.gain, volGain(p.vol) * 0.45, ac); }, stop() { fadeOut(ac, g, [l, r]); } };
+      g.gain.value = 0; l.frequency.value = p.traeger; r.frequency.value = p.traeger + p.beat;
+      l.connect(m, 0, 0); r.connect(m, 0, 1); m.connect(g); g.connect(out); l.start(); r.start();
+      let t0 = ac.currentTime, key = '';
+      const L = { now: p.beat,
+        update(q) {
+          p = q; const k = p.beat + '|' + p.ziel + '|' + p.dauer;
+          if (k !== key) { key = k; t0 = ac.currentTime; }        // Verlauf neu starten, wenn er geaendert wurde
+          setP(l.frequency, p.traeger, ac); setP(g.gain, volGain(p.vol) * 0.45, ac); L.tick(ac.currentTime);
+        },
+        tick(now) { L.now = beatAt(p, now - t0); setP(r.frequency, p.traeger + L.now, ac, 0.3); },
+        stop() { fadeOut(ac, g, [l, r]); } };
       L.update(p); return L;
     } },
 };
@@ -229,7 +243,8 @@ const PRESETS = [
   { name: 'Regen', layers: mix({ regen: { vol: 0.6, staerke: 0.55 }, noise: { vol: 0.3, farbe: 'braun', ton: 0.35 } }) },
   { name: 'Fokus', layers: mix({ noise: { vol: 0.5, farbe: 'rosa', ton: 0.6 }, binaural: { vol: 0.3, beat: 16 } }) },
   { name: 'Meditation', layers: mix({ drone: { vol: 0.5, root: 45, hell: 0.3 }, glocken: { vol: 0.45, dichte: 0.35 }, binaural: { vol: 0.25, beat: 6 } }) },
-  { name: 'Meer', layers: mix({ wellen: { vol: 0.75, tempo: 0.45 }, glocken: { vol: 0.25, dichte: 0.15 } }) }];
+  { name: 'Meer', layers: mix({ wellen: { vol: 0.75, tempo: 0.45 }, glocken: { vol: 0.25, dichte: 0.15 } }) },
+  { name: 'Einschlafen', layers: mix({ noise: { vol: 0.4, farbe: 'braun', ton: 0.4 }, binaural: { vol: 0.3, beat: 10, ziel: 2, dauer: 20, traeger: 150 } }) }];
 const DEFAULT_SETTINGS = { schema: 1, vol: 0.7, timerMin: 0, layers: PRESETS[0].layers, own: [] };
 function load(k, fb) { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? fb : v; } catch (e) { return fb; } }
 let saveOk = true;
@@ -251,7 +266,8 @@ function tick() {
   if (!E.playing) return;
   const now = E.ac.currentTime; Object.keys(E.live).forEach(id => { if (E.live[id].tick) E.live[id].tick(now); });
   let v = S.vol;
-  if (E.end) { const rem = (E.end - Date.now()) / 1000; if (rem <= 0) { stop(); return; } v = timerGain(rem, S.vol); updateStatus(); }
+  if (E.end) { const rem = (E.end - Date.now()) / 1000; if (rem <= 0) { stop(); return; } v = timerGain(rem, S.vol); }
+  if (E.end || $('bb-now')) updateStatus();
   E.master.gain.setTargetAtTime(volGain(v), now, 0.3);
 }
 function play() {
@@ -278,6 +294,7 @@ function updateStatus() {
   const st = $('status');
   if (st) st.textContent = !E.playing ? (anyOn() ? '' : 'Schalte mindestens eine Ebene ein.') : E.end ? 'Timer: noch ' + fmtClock((E.end - Date.now()) / 1000) : 'läuft ohne Timer';
   if (!$('night').hidden) $('night-t').textContent = E.end ? fmtClock((E.end - Date.now()) / 1000) : '';
+  const bb = $('bb-now'); if (bb) bb.textContent = E.live.binaural ? 'Schwebung gerade: ' + fmtNum(E.live.binaural.now) + ' Hz' : 'Der Verlauf beginnt mit dem Start der Wiedergabe.';
 }
 function anyOn() { return ORDER.some(id => S.layers[id].on); }
 // Nachtbildschirm: schwarz und so dunkel wie moeglich, das Display bleibt aber an.
@@ -288,7 +305,13 @@ $('night').onclick = () => history.back();
 // ---------------------------------------------------------------- Ansichten
 const view = $('view'), VIEWS = {};
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-function slider(id, key, label, v) { return '<label class="f">' + label + '</label><input type="range" min="0" max="1" step="0.01" value="' + v + '" data-l="' + id + '" data-k="' + key + '">'; }
+// Regler 0..1; mit rng = [min, max, step, Einheit] ein Regler mit echtem Wert, der neben der Beschriftung steht.
+function slider(id, key, label, v, rng) {
+  const r = rng || [0, 1, 0.01];
+  return '<label class="f">' + label + (rng ? ': <b data-lab="' + id + '.' + key + '">' + fmtNum(v) + '</b> ' + r[3] : '') + '</label>' +
+    '<input type="range" min="' + r[0] + '" max="' + r[1] + '" step="' + r[2] + '" value="' + v + '" data-l="' + id + '" data-k="' + key + '">';
+}
+function fmtNum(v) { return String(Math.round(v * 10) / 10).replace('.', ','); }
 function chips(id, key, opts, cur) { return '<div class="chips" style="margin-top:8px">' + opts.map(o => '<button class="chip' + (o[0] === cur ? ' on' : '') + '" data-l="' + id + '" data-k="' + key + '" data-v="' + o[0] + '">' + o[1] + '</button>').join('') + '</div>'; }
 function layerControls(id, p) {
   let h = slider(id, 'vol', 'Lautstärke', p.vol);
@@ -297,7 +320,11 @@ function layerControls(id, p) {
   if (id === 'wellen') h += slider(id, 'tempo', 'langsam – schnell', p.tempo);
   if (id === 'drone') h += chips(id, 'root', ROOTS.map(r => [r[1], r[0]]), p.root) + slider(id, 'hell', 'dunkel – hell', p.hell);
   if (id === 'glocken') h += slider(id, 'dichte', 'selten – oft', p.dichte);
-  if (id === 'binaural') h += chips(id, 'beat', BEATS, p.beat) + '<div class="muted small" style="margin-top:6px">Wirkt nur mit Kopfhörern.</div>';
+  if (id === 'binaural') h += slider(id, 'beat', 'Schwebung', p.beat, [0.5, 40, 0.5, 'Hz']) + chips(id, 'beat', BEATS, p.beat) +
+    slider(id, 'traeger', 'Grundton', p.traeger, [100, 400, 5, 'Hz']) +
+    '<label class="f">Verlauf: Schwebung gleitet zu einem Zielwert</label>' + chips(id, 'dauer', GLIDES, p.dauer).replace('margin-top:8px', 'margin-top:2px') +
+    (p.dauer > 0 ? slider(id, 'ziel', 'Ziel', p.ziel, [0.5, 40, 0.5, 'Hz']) + chips(id, 'ziel', BEATS, p.ziel) + '<div class="muted small" id="bb-now" style="margin-top:6px"></div>' : '') +
+    '<div class="muted small" style="margin-top:6px">Wirkt nur mit Kopfhörern. Tiefe Schwebungen (2 bis 6 Hz) passen zu Ruhe und Schlaf, höhere zu Konzentration.</div>';
   return h;
 }
 function sameMix(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
@@ -323,7 +350,12 @@ VIEWS.home = () => {
 view.addEventListener('input', e => {
   const el = e.target;
   if (el.id === 'vol') { S.vol = +el.value; save(); if (E.playing) tick(); return; }
-  if (el.dataset.l && el.type === 'range') { S.layers[el.dataset.l][el.dataset.k] = +el.value; save(); applyLayer(el.dataset.l); markPresets(); }
+  if (el.dataset.l && el.type === 'range') {
+    S.layers[el.dataset.l][el.dataset.k] = +el.value; save(); applyLayer(el.dataset.l); markPresets();
+    const lab = view.querySelector('[data-lab="' + el.dataset.l + '.' + el.dataset.k + '"]'); if (lab) lab.textContent = fmtNum(+el.value);
+    // Schnellwahl-Knoepfe desselben Reglers nachziehen
+    view.querySelectorAll('button[data-l="' + el.dataset.l + '"][data-k="' + el.dataset.k + '"]').forEach(b => b.classList.toggle('on', +b.dataset.v === +el.value));
+  }
 });
 view.addEventListener('change', e => {
   const id = e.target.dataset.on; if (!id) return;
@@ -371,7 +403,7 @@ VIEWS.info = () => {
     '<li>Der Nachtbildschirm macht das Display schwarz und dunkel; Tippen beendet ihn. Der Klang läuft, solange die App geöffnet ist.</li>' +
     '<li>Ob der Klang bei ausgeschaltetem Display weiterläuft, hängt vom Handy ab. Verlass dich fürs Einschlafen auf den Nachtbildschirm.</li>' +
     '<li>Für binaurale Beats ist die Studienlage dünn und uneinheitlich. Sieh sie als angenehmen Klang, nicht als Mittel mit sicherer Wirkung. Bei Epilepsie vorher ärztlich nachfragen.</li></ul></div>' +
-    '<div class="muted small">Klangraum v1.0</div>';
+    '<div class="muted small">Klangraum v1.1</div>';
 };
 function render(name) {
   if (!VIEWS[name]) name = 'home';
@@ -401,6 +433,10 @@ async function krTests() {
   t('bellHz: zwei Oktaven ueber dem Grundton, Pentatonik', Math.abs(bellHz(110, 0) - 440) < 1e-9 && Math.abs(bellHz(110, 3) - 440 * Math.pow(2, 7 / 12)) < 1e-9);
   t('timerGain: letzte Minute linear', timerGain(120, 0.8) === 0.8 && timerGain(30, 0.8) === 0.4 && timerGain(0, 0.8) === 0);
   t('fmtClock', fmtClock(125) === '2:05' && fmtClock(-3) === '0:00');
+  const bp = { beat: 10, ziel: 2, dauer: 20 };
+  t('beatAt: Verlauf von 10 nach 2 Hz in 20 min', beatAt(bp, 0) === 10 && beatAt(bp, 600) === 6 && beatAt(bp, 1200) === 2 && beatAt(bp, 5000) === 2);
+  t('beatAt: ohne Verlauf fest, auch aufwaerts moeglich', beatAt({ beat: 6, ziel: 2, dauer: 0 }, 900) === 6 && beatAt({ beat: 4, ziel: 16, dauer: 10 }, 300) === 10);
+  t('fmtNum', fmtNum(6) === '6' && fmtNum(7.5) === '7,5' && fmtNum(2.04) === '2');
   const N = 48000, w = noiseData('weiss', N, rnd), pk = noiseData('rosa', N, rnd), br = noiseData('braun', N, rnd);
   [['weiss', w], ['rosa', pk], ['braun', br]].forEach(x => { const s = stat(x[1]); t('Rauschen ' + x[0] + ': Pegel und Grenzen', s.bad === 0 && s.peak <= 1 && Math.abs(s.rms - 0.2) < 0.02, s.rms.toFixed(3) + ' / ' + s.peak.toFixed(2)); });
   const cw = ac1(w), cp = ac1(pk), cb = ac1(br);

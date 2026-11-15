@@ -64,3 +64,10 @@ Zuschalten einer Ebene und Timer im Browser geprüft. Signierte APK
 Geplante Aufbauten aus der Ideenliste: Flow-Timer (Fokus-Blöcke mit
 Soundscape) und Herzschlag-Musik (Tempo aus der Puls-Kamera des
 Körper-Labors).
+
+v1.1 (code 2, 2026-11-15): Binaurale Beats auf Daniels Wunsch ausgebaut
+(`beatAt`, Regler mit echtem Wertebereich über `slider(..., rng)`): freie
+Schwebung 0,5–40 Hz, Grundton 100–400 Hz, Verlauf zu einem Zielwert in 10,
+20 oder 30 Minuten; neue Mischung "Einschlafen". Selbsttest 30/30, im
+Browser geprüft. Daniel hat Kopfhörer. Signierte APK
+`dist/klangraum-1.1.apk`; am Gerät weiterhin nichts getestet und gehört.

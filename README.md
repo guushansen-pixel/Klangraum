@@ -4,7 +4,7 @@ Offline-Android-App: Klanglandschaften zum Einschlafen, Konzentrieren und
 Meditieren, die das Handy im Moment des Abspielens selbst berechnet (Web
 Audio). Es gibt keine einzige Audiodatei, und nichts wiederholt sich.
 
-APK: [dist/klangraum-1.0.apk](dist/klangraum-1.0.apk)
+APK: [dist/klangraum-1.1.apk](dist/klangraum-1.1.apk)
 
 ## Ebenen
 
@@ -17,9 +17,10 @@ Sechs Ebenen, einzeln schaltbar und mischbar:
 | Wellen | braunes Rauschen, Lautstärke und Filter von zwei langsamen Schwingungen mit ungleichen Perioden bewegt | langsam–schnell |
 | Klangteppich | vier Oszillatoren (Grundton, leicht verstimmt, Quinte, Oktave) hinter einem langsam atmenden Filter | Grundton C/D/E/G/A, dunkel–hell |
 | Glocken | Sinustöne aus der Dur-Pentatonik zwei Oktaven über dem Grundton, zufällige Abstände, Echo | selten–oft |
-| Binaurale Beats | 180 Hz links, 180 Hz plus Schwebung rechts | 2, 6, 10 oder 16 Hz |
+| Binaurale Beats | Grundton links, Grundton plus Schwebung rechts | Schwebung 0,5–40 Hz (Schnellwahl 2, 6, 10, 16, 40), Grundton 100–400 Hz, Verlauf: Schwebung gleitet in 10, 20 oder 30 Minuten zu einem Zielwert |
 
-Dazu: fünf fertige Mischungen (Schlaf, Regen, Fokus, Meditation, Meer),
+Dazu: sechs fertige Mischungen (Schlaf, Regen, Fokus, Meditation, Meer,
+Einschlafen mit gleitender Schwebung von 10 auf 2 Hz),
 eigene Mischungen speichern, Gesamtlautstärke, Einschlaf-Timer (15 bis 90
 Minuten, letzte Minute wird leiser), Nachtbildschirm (schwarz, dunkelste
 Helligkeit).
