@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2 (code 3) – 2026-11-16
+
+- Atem-Dirigent: Handy auf dem Bauch, der Atem steuert die Brandung; ein
+  Leitton atmet etwas langsamer und führt zu einem Ziel (6, 5 oder 4,5 pro
+  Minute). Auswertung Anfang gegen Ende, Verlauf der letzten Sitzungen.
+
 ## 1.1 (code 2) – 2026-11-15
 
 - Binaurale Beats ausgebaut: Schwebung frei von 0,5 bis 40 Hz (dazu Gamma

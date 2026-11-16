@@ -252,6 +252,7 @@ function save() { try { localStorage.setItem(K.set, JSON.stringify(S)); } catch 
 // Gespeicherte Mischung mit den Vorgaben auffuellen (neue Ebenen oder Regler nach einem Update).
 function normLayers(l) { const o = defLayers(); ORDER.forEach(id => { if (l && l[id]) Object.assign(o[id], l[id]); }); return o; }
 const S = Object.assign({}, DEFAULT_SETTINGS, load(K.set, {}));
+S.dirigent = Object.assign({ ziel: 6, min: 10, log: [] }, S.dirigent || {});
 S.layers = normLayers(S.layers); S.own = (S.own || []).map(p => ({ name: String(p.name), layers: normLayers(p.layers) }));
 
 // ---------------------------------------------------------------- Wiedergabe
@@ -271,6 +272,7 @@ function tick() {
   E.master.gain.setTargetAtTime(volGain(v), now, 0.3);
 }
 function play() {
+  if (D.on) dirigentStop();
   clearTimeout(E.stopTo);
   if (!E.ac) { E.ac = new (window.AudioContext || window.webkitAudioContext)(); E.master = makeMaster(E.ac); }
   if (E.ac.state !== 'running') E.ac.resume();
@@ -283,7 +285,7 @@ function stop() {
   if (!E.playing) return;
   E.playing = false; clearInterval(E.timer); E.end = 0;
   E.master.gain.cancelScheduledValues(E.ac.currentTime); E.master.gain.setTargetAtTime(0, E.ac.currentTime, 0.15);
-  E.stopTo = setTimeout(() => { ORDER.forEach(applyLayer); if (!E.playing) E.ac.suspend(); }, 700);
+  E.stopTo = setTimeout(() => { ORDER.forEach(applyLayer); if (!E.playing && !D.on) E.ac.suspend(); }, 700);
   if (NATIVE && NATIVE.setKeepScreenOn) NATIVE.setKeepScreenOn(false);
   if (!$('night').hidden) nightOff();
   updateStatus();
@@ -302,8 +304,108 @@ function nightOn() { $('night').hidden = false; if (NATIVE && NATIVE.setBrightne
 function nightOff() { $('night').hidden = true; if (NATIVE && NATIVE.setBrightness) NATIVE.setBrightness(-1); }
 $('night').onclick = () => history.back();
 
+// ---------------------------------------------------------------- Atem-Dirigent
+// Das Handy liegt auf dem Bauch, der Atem steuert den Klang: Die Brandung schwillt mit jedem
+// Atemzug an und ab. Ein leiser Leitton atmet etwas langsamer als du und zieht dich mit.
+//
+// Atem laufend aus dem Bewegungssensor: je Achse schneller minus langsamer gleitender
+// Mittelwert, die Achse mit der staerksten Bewegung, normiert auf etwa -1..1. Ein Atemzug
+// ist ein Durchgang von unten nach oben. Zeiten in Sekunden.
+function breathTracker() {
+  const ax = [0, 1, 2].map(() => ({ fast: null, slow: 0, sig: 0, pow: 0 }));
+  const T = { v: 0, amp: 0, rate: null, breaths: [], last: null, armed: false, axis: 0,
+    push(t, x, y, z) {
+      const vals = [x, y, z], dt = T.last === null ? 0.02 : clamp(t - T.last, 0.001, 0.5); T.last = t;
+      const aF = 1 - Math.exp(-dt / 0.6), aS = 1 - Math.exp(-dt / 20), aP = 1 - Math.exp(-dt / 12);
+      ax.forEach((a, i) => { if (a.fast === null) a.fast = a.slow = vals[i]; a.fast += aF * (vals[i] - a.fast); a.slow += aS * (vals[i] - a.slow); a.sig = a.fast - a.slow; a.pow += aP * (a.sig * a.sig - a.pow); });
+      ax.forEach((a, i) => { if (a.pow > ax[T.axis].pow * 1.5) T.axis = i; });       // nur bei klarem Vorsprung die Achse wechseln
+      T.amp = Math.sqrt(ax[T.axis].pow) * 1.5; T.v = T.amp > 0.01 ? clamp(ax[T.axis].sig / T.amp, -1, 1) : 0;
+      if (T.v < -0.3) T.armed = true;
+      else if (T.armed && T.v > 0.3) { T.armed = false; const b = T.breaths; b.push(t); if (b.length >= 3) { const k = Math.min(4, b.length - 1); T.rate = 60 * k / (b[b.length - 1] - b[b.length - 1 - k]); } }
+      return T.v;
+    } };
+  return T;
+}
+// Tempo des Leittons: einen Atemzug pro Minute langsamer als du, aber nie unter dem Ziel.
+function pacerRate(measured, ziel) { return ziel > 0 && measured ? Math.max(ziel, measured - 1) : 0; }
+function medianOf(a) { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y), h = s.length >> 1; return s.length % 2 ? s[h] : (s[h - 1] + s[h]) / 2; }
+// Auswertung: Atemfrequenz am Anfang (erstes Drittel) und am Ende (letztes Drittel) der Messwerte.
+function dirigentSummary(rates) {
+  if (rates.length < 6) return null; const k = Math.max(2, Math.floor(rates.length / 3));
+  return { start: Math.round(medianOf(rates.slice(0, k)) * 10) / 10, ende: Math.round(medianOf(rates.slice(-k)) * 10) / 10 };
+}
+const D = { on: false, tracker: null, nodes: null, t0: 0, end: 0, phase: 0, rates: [], handler: null, timer: 0, got: 0, lastTick: 0, result: null };
+function dirigentStart() {
+  if (E.playing) stop(); clearTimeout(E.stopTo);
+  if (!E.ac) { E.ac = new (window.AudioContext || window.webkitAudioContext)(); E.master = makeMaster(E.ac); }
+  if (E.ac.state !== 'running') E.ac.resume();
+  const ac = E.ac, g = ac.createGain(), f = ac.createBiquadFilter(), src = loopSource(ac, 'braun'), gp = ac.createGain(), fp = ac.createBiquadFilter();
+  f.type = 'lowpass'; f.frequency.value = 500; g.gain.value = 0.3; src.connect(f); f.connect(g); g.connect(E.master);
+  const root = midiHz(S.layers.drone.root), oscs = [1, 1.5, 2].map((m, i) => { const o = ac.createOscillator(), a = ac.createGain(); o.frequency.value = root * m; a.gain.value = [0.5, 0.22, 0.12][i]; o.connect(a); a.connect(fp); o.start(); return o; });
+  fp.type = 'lowpass'; fp.frequency.value = 700; gp.gain.value = 0; fp.connect(gp); gp.connect(E.master);
+  E.master.gain.cancelScheduledValues(ac.currentTime); E.master.gain.setTargetAtTime(volGain(S.vol), ac.currentTime, 0.5);
+  Object.assign(D, { on: true, tracker: breathTracker(), nodes: { g, f, gp, srcs: [src].concat(oscs) }, t0: Date.now(), end: Date.now() + S.dirigent.min * 60000, phase: 0, rates: [], nextRate: 10, got: 0, lastTick: performance.now(), result: null });
+  const m0 = performance.now();
+  D.handler = e => { const a = e.accelerationIncludingGravity; if (!a || a.x == null) return; D.got++; D.tracker.push((performance.now() - m0) / 1000, a.x, a.y, a.z); };
+  window.addEventListener('devicemotion', D.handler);
+  D.timer = setInterval(dirigentTick, 100);
+  if (NATIVE && NATIVE.setKeepScreenOn) NATIVE.setKeepScreenOn(true);
+  render('atem');
+}
+function dirigentTick() {
+  if (!D.on) return;
+  const ac = E.ac, T = D.tracker, now = performance.now(), dt = (now - D.lastTick) / 1000, el = (Date.now() - D.t0) / 1000; D.lastTick = now;
+  if (el > 3 && !D.got) { dirigentStop('Der Bewegungssensor liefert keine Daten.'); return; }
+  if (Date.now() >= D.end) { dirigentStop(); return; }
+  const u = (T.v + 1) / 2;                       // 0..1 im Atemtakt
+  D.nodes.g.gain.setTargetAtTime(0.25 + 1.6 * u, ac.currentTime, 0.25); D.nodes.f.frequency.setTargetAtTime(350 + 900 * u, ac.currentTime, 0.25);
+  const pr = pacerRate(T.rate, S.dirigent.ziel);
+  if (pr) { D.phase += dt * pr / 60; D.nodes.gp.gain.setTargetAtTime(0.32 * (1 - Math.cos(2 * Math.PI * D.phase)) / 2, ac.currentTime, 0.15); }
+  else D.nodes.gp.gain.setTargetAtTime(0, ac.currentTime, 0.3);
+  if (T.rate && el >= D.nextRate) { D.rates.push(T.rate); D.nextRate = el + 5; }       // alle 5 s einen Messwert festhalten
+  E.master.gain.setTargetAtTime(volGain(timerGain((D.end - Date.now()) / 1000, S.vol)), ac.currentTime, 0.3);
+  const q = id => $(id);
+  if (q('d-rate')) {
+    q('d-rate').textContent = T.rate ? fmtNum(T.rate) : '–';
+    q('d-msg').textContent = T.amp <= 0.01 ? 'Noch kein Atem erkannt. Liegt das Handy flach auf dem Bauch?' : pr ? 'Leitton: ' + fmtNum(pr) + ' pro Minute' : S.dirigent.ziel ? 'Der Leitton setzt ein, sobald dein Atem erkannt ist.' : 'Der Klang folgt deinem Atem.';
+    q('d-left').textContent = 'noch ' + fmtClock((D.end - Date.now()) / 1000); q('d-bar').style.width = Math.round(u * 100) + '%';
+  }
+}
+function dirigentStop(fehler) {
+  if (!D.on) return;
+  D.on = false; clearInterval(D.timer); window.removeEventListener('devicemotion', D.handler);
+  const n = D.nodes; fadeOut(E.ac, n.g, n.srcs); n.gp.gain.setTargetAtTime(0, E.ac.currentTime, 0.12); setTimeout(() => { try { n.gp.disconnect(); } catch (e) {} if (!E.playing && !D.on) E.ac.suspend(); }, 950);
+  if (NATIVE && NATIVE.setKeepScreenOn) NATIVE.setKeepScreenOn(false);
+  const sum = dirigentSummary(D.rates), min = Math.round((Date.now() - D.t0) / 6000) / 10;
+  D.result = fehler ? { fehler } : { min, sum };
+  if (!fehler && sum) { S.dirigent.log.push({ d: new Date().toISOString().slice(0, 10), min, start: sum.start, ende: sum.ende }); S.dirigent.log = S.dirigent.log.slice(-20); save(); }
+  if ((location.hash || '') === '#atem') render('atem');
+}
+
 // ---------------------------------------------------------------- Ansichten
 const view = $('view'), VIEWS = {};
+VIEWS.atem = () => {
+  const c = S.dirigent;
+  if (D.on) {
+    view.innerHTML = '<div class="card" style="text-align:center"><div class="muted small">Atemzüge pro Minute</div><div style="font-size:64px;font-weight:700;line-height:1.1" id="d-rate">–</div>' +
+      '<div class="muted small" id="d-msg">Leg das Handy auf den Bauch und atme ruhig.</div><div style="height:8px;background:#0E1319;border-radius:4px;overflow:hidden;margin:14px 0"><i id="d-bar" style="display:block;height:100%;width:50%;background:var(--acc)"></i></div>' +
+      '<div class="muted small" id="d-left"></div><button class="block" id="d-stop">Beenden</button></div><div class="muted small">Augen zu. Du musst nichts ansehen: Der Klang zeigt dir deinen Atem.</div>';
+    $('d-stop').onclick = () => dirigentStop(); return;
+  }
+  let h = '';
+  if (D.result) h += '<div class="card">' + (D.result.fehler ? '<span class="bad">' + esc(D.result.fehler) + '</span>' : D.result.sum ? '<h2>Gerade eben · ' + fmtNum(D.result.min) + ' min</h2><div class="row"><div class="grow"><div style="font-size:28px;font-weight:700">' + fmtNum(D.result.sum.start) + '</div><div class="muted small">Atemzüge pro Minute am Anfang</div></div>' +
+    '<div class="grow"><div style="font-size:28px;font-weight:700">' + fmtNum(D.result.sum.ende) + '</div><div class="muted small">am Ende</div></div></div>' : 'Zu kurz für eine Auswertung.') + '</div>';
+  h += '<div class="card"><h2>So geht es</h2><div class="small">Leg dich hin und das Handy mit dem Display nach oben auf den Bauch, etwa am Nabel. Die Brandung schwillt mit deinem Atem an und ab. Ein leiser Leitton atmet etwas langsamer als du; lass dich von ihm mitziehen, ohne dich anzustrengen.</div>' +
+    '<label class="f">Ziel für den Leitton (Atemzüge pro Minute)</label><div class="chips">' + [[0, 'nur folgen'], [6, '6'], [5, '5'], [4.5, '4,5']].map(o => '<button class="chip' + (c.ziel === o[0] ? ' on' : '') + '" data-dz="' + o[0] + '">' + o[1] + '</button>').join('') + '</div>' +
+    '<label class="f">Dauer</label><div class="chips">' + [5, 10, 15, 20].map(m => '<button class="chip' + (c.min === m ? ' on' : '') + '" data-dm="' + m + '">' + m + ' min</button>').join('') + '</div>' +
+    '<button class="primary block" id="d-go">Start</button></div>';
+  if (c.log.length) h += '<div class="card"><h2>Bisher</h2>' + c.log.slice().reverse().slice(0, 8).map(x => '<div class="row" style="padding:5px 0"><span class="grow">' + x.d.slice(8, 10) + '.' + x.d.slice(5, 7) + '. · ' + fmtNum(x.min) + ' min</span><span class="muted small">' + fmtNum(x.start) + ' → ' + fmtNum(x.ende) + ' pro Minute</span></div>').join('') + '</div>';
+  h += '<div class="muted small">Langsames Atmen um sechs Züge pro Minute gilt als beruhigend und ist gut untersucht. Wie genau dein Handy den Atem erfasst, ist nicht geprüft; die Zahl ist ein Anhaltspunkt. Wird dir schwindelig, atme normal weiter.</div>';
+  view.innerHTML = h;
+  view.querySelectorAll('[data-dz]').forEach(b => b.onclick = () => { c.ziel = +b.dataset.dz; save(); render('atem'); });
+  view.querySelectorAll('[data-dm]').forEach(b => b.onclick = () => { c.min = +b.dataset.dm; save(); render('atem'); });
+  $('d-go').onclick = dirigentStart;
+};
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 // Regler 0..1; mit rng = [min, max, step, Einheit] ein Regler mit echtem Wert, der neben der Beschriftung steht.
 function slider(id, key, label, v, rng) {
@@ -343,6 +445,7 @@ VIEWS.home = () => {
   ORDER.forEach(id => { const p = S.layers[id];
     h += '<div class="card' + (p.on ? '' : ' off') + '" id="c-' + id + '"><div class="row"><span class="lname">' + LAYERS[id].name + '</span><label class="sw"><input type="checkbox" data-on="' + id + '"' + (p.on ? ' checked' : '') + '><i></i></label></div>' +
       (p.on ? layerControls(id, p) : '') + '</div>'; });
+  h += '<button class="block" id="h-atem" style="margin-bottom:10px">Atem-Dirigent: dein Atem steuert den Klang</button>';
   h += '<div class="row"><button class="grow" id="h-night">Nachtbildschirm</button><button class="grow" id="h-info">Info</button></div>';
   view.innerHTML = h; updateStatus();
 };
@@ -365,6 +468,7 @@ view.addEventListener('click', e => {
   const el = e.target.closest('button'); if (!el) return;
   if (el.id === 'play') { if (E.playing) stop(); else if (anyOn()) play(); else updateStatus(); return; }
   if (el.id === 'h-night') { nightOn(); return; }
+  if (el.id === 'h-atem') { location.hash = 'atem'; return; }
   if (el.id === 'h-info') { location.hash = 'info'; return; }
   if (el.id === 'p-save') { saveDialog(); return; }
   if (el.id === 'p-edit') { editDialog(); return; }
@@ -403,16 +507,18 @@ VIEWS.info = () => {
     '<li>Der Nachtbildschirm macht das Display schwarz und dunkel; Tippen beendet ihn. Der Klang läuft, solange die App geöffnet ist.</li>' +
     '<li>Ob der Klang bei ausgeschaltetem Display weiterläuft, hängt vom Handy ab. Verlass dich fürs Einschlafen auf den Nachtbildschirm.</li>' +
     '<li>Für binaurale Beats ist die Studienlage dünn und uneinheitlich. Sieh sie als angenehmen Klang, nicht als Mittel mit sicherer Wirkung. Bei Epilepsie vorher ärztlich nachfragen.</li></ul></div>' +
-    '<div class="muted small">Klangraum v1.1</div>';
+    '<div class="muted small">Klangraum v1.2</div>';
 };
 function render(name) {
   if (!VIEWS[name]) name = 'home';
-  $('title').textContent = name === 'info' ? 'Info' : 'Klangraum'; $('back').style.visibility = name === 'home' ? 'hidden' : 'visible';
+  $('title').textContent = name === 'info' ? 'Info' : name === 'atem' ? 'Atem-Dirigent' : 'Klangraum'; $('back').style.visibility = name === 'home' ? 'hidden' : 'visible';
   VIEWS[name](); if (name !== 'home') window.scrollTo(0, 0);
 }
 function route() {
   const h = (location.hash || '#home').slice(1);
   if (h !== 'night' && !$('night').hidden) nightOff();
+  if (D.on && h !== 'atem') dirigentStop();
+  if (h !== 'atem') D.result = null;
   if (h === 'night') { if ($('night').hidden) { history.replaceState(null, '', '#home'); render('home'); } return; }
   render(h);
 }
@@ -437,6 +543,15 @@ async function krTests() {
   t('beatAt: Verlauf von 10 nach 2 Hz in 20 min', beatAt(bp, 0) === 10 && beatAt(bp, 600) === 6 && beatAt(bp, 1200) === 2 && beatAt(bp, 5000) === 2);
   t('beatAt: ohne Verlauf fest, auch aufwaerts moeglich', beatAt({ beat: 6, ziel: 2, dauer: 0 }, 900) === 6 && beatAt({ beat: 4, ziel: 16, dauer: 10 }, 300) === 10);
   t('fmtNum', fmtNum(6) === '6' && fmtNum(7.5) === '7,5' && fmtNum(2.04) === '2');
+  // Atem-Dirigent: kuenstliche Bauchbewegung (Kippen um 0,3 m/s²) mit Sensorrauschen, 50 Werte pro Sekunde
+  const breathe = (perMin, sec, amp) => { const T = breathTracker(); let same = 0, n = 0; for (let i = 0; i < sec * 50; i++) { const tt = i / 50, s = Math.sin(2 * Math.PI * perMin / 60 * tt);
+    const v = T.push(tt, amp * s + (rnd() - 0.5) * 0.03, (rnd() - 0.5) * 0.03, 9.81 + (rnd() - 0.5) * 0.03); if (tt > 30 && Math.abs(s) > 0.5) { n++; if (v * s > 0) same++; } } return { T, follow: n ? same / n : 0 }; };
+  let bt = breathe(12, 90, 0.3); t('Atem 12 pro Minute erkannt', bt.T.rate && Math.abs(bt.T.rate - 12) < 0.8, bt.T.rate && bt.T.rate.toFixed(2));
+  t('Signal folgt dem Atem', bt.follow > 0.8, bt.follow.toFixed(2));
+  bt = breathe(6, 120, 0.3); t('Atem 6 pro Minute erkannt', bt.T.rate && Math.abs(bt.T.rate - 6) < 0.6, bt.T.rate && bt.T.rate.toFixed(2));
+  bt = breathe(12, 60, 0); t('ruhig liegendes Handy: kein Atem', bt.T.rate === null && bt.T.v === 0, bt.T.rate);
+  t('Leitton: einen Zug langsamer, nie unter dem Ziel, aus bei "nur folgen"', pacerRate(12, 6) === 11 && pacerRate(6.4, 6) === 6 && pacerRate(12, 0) === 0 && pacerRate(null, 6) === 0);
+  t('Auswertung Anfang und Ende', JSON.stringify(dirigentSummary([12, 12, 11, 10, 9, 8, 7, 7, 6])) === '{"start":12,"ende":7}' && dirigentSummary([12, 11]) === null);
   const N = 48000, w = noiseData('weiss', N, rnd), pk = noiseData('rosa', N, rnd), br = noiseData('braun', N, rnd);
   [['weiss', w], ['rosa', pk], ['braun', br]].forEach(x => { const s = stat(x[1]); t('Rauschen ' + x[0] + ': Pegel und Grenzen', s.bad === 0 && s.peak <= 1 && Math.abs(s.rms - 0.2) < 0.02, s.rms.toFixed(3) + ' / ' + s.peak.toFixed(2)); });
   const cw = ac1(w), cp = ac1(pk), cb = ac1(br);

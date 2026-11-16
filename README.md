@@ -4,7 +4,7 @@ Offline-Android-App: Klanglandschaften zum Einschlafen, Konzentrieren und
 Meditieren, die das Handy im Moment des Abspielens selbst berechnet (Web
 Audio). Es gibt keine einzige Audiodatei, und nichts wiederholt sich.
 
-APK: [dist/klangraum-1.1.apk](dist/klangraum-1.1.apk)
+APK: [dist/klangraum-1.2.apk](dist/klangraum-1.2.apk)
 
 ## Ebenen
 
@@ -52,3 +52,27 @@ abgestimmt, kein Mensch hat sie bisher gehört.
 
 `klangraum.settings.v1`: `vol`, `timerMin`, `layers` (je Ebene `on`, `vol`
 und ihre Regler), `own` (eigene Mischungen `[{name, layers}]`), `schema`.
+
+## Atem-Dirigent
+
+Eigener Modus, erreichbar von der Startseite: Das Handy liegt auf dem Bauch,
+der Atem steuert den Klang.
+
+- **Atem erfassen** (`breathTracker`): je Achse des Bewegungssensors ein
+  schneller (0,6 s) minus ein langsamer (20 s) gleitender Mittelwert; die
+  Achse mit der stärksten Bewegung wird auf etwa −1 bis 1 normiert. Ein
+  Atemzug ist ein Durchgang von unten nach oben mit Hysterese; die
+  Atemfrequenz kommt aus den letzten bis zu vier Atemzügen.
+- **Klang:** Braunes Rauschen, dessen Lautstärke und Filter dem Atemsignal
+  folgen (Brandung im eigenen Takt).
+- **Leitton:** ein leiser Akkord, der einen Atemzug pro Minute langsamer
+  an- und abschwillt als gemessen, aber nie unter dem gewählten Ziel (6, 5
+  oder 4,5 pro Minute; abschaltbar mit "nur folgen").
+- **Ende:** Dauer 5 bis 20 Minuten, letzte Minute wird leiser; danach
+  Atemfrequenz am Anfang und am Ende (erstes und letztes Drittel der
+  Messwerte), die letzten 20 Sitzungen werden gespeichert.
+
+Geprüft mit künstlicher Bauchbewegung im Selbsttest (6 und 12 pro Minute
+werden auf unter einen Zug genau erkannt, ein ruhig liegendes Handy ergibt
+keinen Atem). Am Körper ungeprüft: ob das Signal des Pixel auf dem Bauch
+reicht und ob der Klang beim Liegen angenehm ist.

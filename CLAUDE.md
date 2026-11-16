@@ -71,3 +71,11 @@ Schwebung 0,5–40 Hz, Grundton 100–400 Hz, Verlauf zu einem Zielwert in 10,
 20 oder 30 Minuten; neue Mischung "Einschlafen". Selbsttest 30/30, im
 Browser geprüft. Daniel hat Kopfhörer. Signierte APK
 `dist/klangraum-1.1.apk`; am Gerät weiterhin nichts getestet und gehört.
+
+v1.2 (code 3, 2026-11-16): Atem-Dirigent auf Daniels Wunsch (`breathTracker`,
+`pacerRate`, `dirigentSummary`, Zustand `D`, Ansicht `atem`). Nutzt den
+Bewegungssensor, der auf dem Pixel im WebView nachweislich läuft
+(Körper-Labor). Im Browser mit `DeviceMotionEvent`s aus der Konsole testbar:
+`S.dirigent.min` klein setzen und per Intervall eine Sinusbewegung auf x
+einspeisen. Selbsttest 36/36. Am Körper noch nicht ausprobiert. APK
+`dist/klangraum-1.2.apk`.
