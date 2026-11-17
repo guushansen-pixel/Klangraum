@@ -4,7 +4,7 @@ Offline-Android-App: Klanglandschaften zum Einschlafen, Konzentrieren und
 Meditieren, die das Handy im Moment des Abspielens selbst berechnet (Web
 Audio). Es gibt keine einzige Audiodatei, und nichts wiederholt sich.
 
-APK: [dist/klangraum-1.2.apk](dist/klangraum-1.2.apk)
+APK: [dist/klangraum-1.2.apk](dist/klangraum-1.2.apk) (v1.2; die APK für v1.3 ist noch nicht gebaut)
 
 ## Ebenen
 
@@ -51,7 +51,51 @@ abgestimmt, kein Mensch hat sie bisher gehört.
 ## Datenmodell (localStorage)
 
 `klangraum.settings.v1`: `vol`, `timerMin`, `layers` (je Ebene `on`, `vol`
-und ihre Regler), `own` (eigene Mischungen `[{name, layers}]`), `schema`.
+und ihre Regler), `own` (eigene Mischungen `[{name, layers}]`), `schema`,
+`dirigent`, seit v1.3 `flow` (`fokus`, `pause`, `runden`, `mix`, `pauseMix`,
+`log: [{d, min}]`), `puls` (`bpm`, `modus`, `ziel`, `min`) und `maler`
+(`teppich`). Mischungen im Flow-Timer sind über den Namen verwiesen
+(`b:Fokus`, `o:Eigene`); gibt es sie nicht mehr, gilt wieder „Fokus".
+
+## Flow-Timer
+
+Fokus-Blöcke mit Klang (Startseite → *Flow-Timer*): Fokus 15 bis 90 min,
+Pause 3 bis 15 min, 1 bis 4 Runden. Im Fokus läuft eine fertige oder eigene
+Mischung, in der Pause Stille oder eine andere Mischung. Jeder Abschnitt
+blendet in 3 s ein und in 8 s aus; ein Gong markiert den Wechsel (einmal =
+Pause, zweimal = weiter, dreimal = fertig). Gezählt werden nur
+Fokus-Minuten, die letzten 40 Sitzungen bleiben gespeichert.
+
+Der Timer rechnet mit der Uhrzeit, nicht mit Intervallen, und läuft, solange
+die Ansicht offen ist (Display bleibt an). Verlassen der Ansicht beendet
+ihn. Die Mischung der Startseite bleibt unberührt (`E.over`).
+
+## Herzschlag-Musik
+
+Ein weicher Doppelschlag (lub-dub) im eingestellten Tempo, darüber eine
+zufällige Melodie in kleinen Schritten der Pentatonik und ein leiser
+Liegeklang, alles in der Tonart des Klangteppichs. Das Tempo kommt vom
+Mittippen des eigenen Pulses (`tapBpm`: Median der letzten bis zu acht
+Abstände, ab vier Tippern, 35–200 gültig) oder vom Regler (40–140).
+Zwei Arten: Tempo halten, oder in den ersten 70 % der Dauer gleichmäßig zu
+einem Ziel (50–65) hinunter.
+
+**Die App misst den Puls nicht.** Die ursprüngliche Idee (Tempo aus der
+Puls-Kamera des Körper-Labors) bräuchte Kamerazugriff im WebView und eine
+Brücke; das ist nicht gebaut. Ob ruhiger werdende Musik den Puls mitnimmt,
+ist plausibel, aber nicht gesichert, und die App sagt das auch.
+
+## Klangmaler
+
+Eine Fläche als Instrument: links–rechts elf Töne der Dur-Pentatonik über
+zwei Oktaven (`MALER`), oben–unten Filter von 4800 bis 400 Hz, bis zu vier
+Finger zugleich, Echo. Kippen nach links/rechts verschiebt das Stereobild
+(`tiltPan`), das obere Ende anheben gibt mehr Echo (`tiltEcho`). Auf Wunsch
+liegt der Klangteppich darunter. Der Klangmaler stoppt eine laufende
+Mischung nicht, man malt darüber.
+
+Die Kipp-Richtungen sind nach der Android-Konvention gerechnet, am Gerät
+aber ungeprüft; sind sie vertauscht, das Vorzeichen in `tiltPan` drehen.
 
 ## Atem-Dirigent
 

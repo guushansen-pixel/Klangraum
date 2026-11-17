@@ -40,6 +40,18 @@ input[type=text] { font: inherit; color: var(--txt); background: #0E1319; border
 .sw i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--muted); transition: transform .15s; }
 .sw input:checked + i { background: var(--acc); border-color: var(--acc); }
 .sw input:checked + i::after { transform: translateX(20px); background: #06201D; }
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.modes button { text-align: left; padding: 11px 12px; line-height: 1.25; }
+.modes b { display: block; } .modes span { font-size: 12px; color: var(--muted); }
+.bigno { font-size: 64px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.bar { height: 8px; background: #0E1319; border-radius: 4px; overflow: hidden; margin: 14px 0; } .bar i { display: block; height: 100%; width: 0; background: var(--acc); }
+#h-tap { width: 100%; padding: 22px; font-size: 17px; border-radius: 16px; touch-action: manipulation; }
+#pad { position: relative; height: 56vh; min-height: 300px; border-radius: 14px; border: 1px solid var(--line); overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none;
+  background: linear-gradient(180deg, #23404A 0%, #1B222C 55%, #141A22 100%); }
+#pad .col { position: absolute; top: 0; bottom: 0; border-left: 1px solid rgba(255,255,255,.06); }
+#pad .col.root { border-left-color: rgba(63,182,168,.5); }
+#pad .dot { position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; background: radial-gradient(circle, rgba(63,182,168,.9), rgba(63,182,168,0) 70%); pointer-events: none; }
+#pad .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--muted); padding: 20px; pointer-events: none; }
 ul { margin: 6px 0; padding-left: 20px; } li { margin: 4px 0; }
 #night { position: fixed; inset: 0; z-index: 30; background: #000; color: #2a2a2a; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 14px; }
 #night[hidden], #modal[hidden] { display: none; }
@@ -253,40 +265,59 @@ function save() { try { localStorage.setItem(K.set, JSON.stringify(S)); } catch 
 function normLayers(l) { const o = defLayers(); ORDER.forEach(id => { if (l && l[id]) Object.assign(o[id], l[id]); }); return o; }
 const S = Object.assign({}, DEFAULT_SETTINGS, load(K.set, {}));
 S.dirigent = Object.assign({ ziel: 6, min: 10, log: [] }, S.dirigent || {});
+S.flow = Object.assign({ fokus: 25, pause: 5, runden: 2, mix: 'b:Fokus', pauseMix: '', log: [] }, S.flow || {});
+S.puls = Object.assign({ bpm: 70, modus: 'ruhe', ziel: 60, min: 10 }, S.puls || {});
+S.maler = Object.assign({ teppich: true }, S.maler || {});
 S.layers = normLayers(S.layers); S.own = (S.own || []).map(p => ({ name: String(p.name), layers: normLayers(p.layers) }));
 
 // ---------------------------------------------------------------- Wiedergabe
-const E = { ac: null, master: null, live: {}, playing: false, timer: 0, end: 0, stopTo: 0 };
-const ctxApi = { root: () => S.layers.drone.root };
+// over = Ebenen eines Modus (Flow-Timer) statt der Mischung von der Startseite; fade = Faktor 0..1 obendrauf.
+const E = { ac: null, master: null, live: {}, playing: false, timer: 0, end: 0, stopTo: 0, over: null, fade: 1, hold: 0 };
+const curLayers = () => E.over || S.layers;
+const ctxApi = { root: () => curLayers().drone.root };
+// Klang bereitstellen. Ebenen einer eben gestoppten Mischung sofort abbauen, statt sie unter dem neuen Klang weiterlaufen zu lassen.
+function ensureAudio() {
+  clearTimeout(E.stopTo);
+  if (!E.ac) { E.ac = new (window.AudioContext || window.webkitAudioContext)(); E.master = makeMaster(E.ac); }
+  if (E.ac.state !== 'running') E.ac.resume();
+  if (!E.playing) ORDER.forEach(applyLayer);
+  return E.ac;
+}
+function busy() { return E.playing || D.on || F.on || H.on || M.on; }
+// Klang abschalten, sobald nichts mehr laeuft (und ein Gong ausgeklungen ist).
+function idle() { if (!E.ac || busy()) return; const w = E.hold - Date.now(); if (w > 0) { setTimeout(idle, w + 50); return; } E.ac.suspend(); }
+function masterTo(v, tc) { E.master.gain.cancelScheduledValues(E.ac.currentTime); E.master.gain.setTargetAtTime(v, E.ac.currentTime, tc || 0.3); }
+function keepOn(on) { if (NATIVE && NATIVE.setKeepScreenOn) NATIVE.setKeepScreenOn(on); }
+// Alle Sonder-Modi beenden, ausser dem genannten.
+function stopModes(except) { if (D.on && except !== 'atem') dirigentStop(); if (F.on && except !== 'flow') flowStop(); if (H.on && except !== 'puls') pulsStop(); if (M.on && except !== 'maler') malerStop(); }
 function applyLayer(id) {
-  const p = S.layers[id];
+  const p = curLayers()[id];
   if (E.playing && p.on) { if (E.live[id]) E.live[id].update(p); else E.live[id] = LAYERS[id].build(E.ac, E.master, p, ctxApi); }
   else if (E.live[id]) { E.live[id].stop(); delete E.live[id]; }
 }
 function tick() {
   if (!E.playing) return;
   const now = E.ac.currentTime; Object.keys(E.live).forEach(id => { if (E.live[id].tick) E.live[id].tick(now); });
-  let v = S.vol;
+  let v = S.vol * E.fade;
   if (E.end) { const rem = (E.end - Date.now()) / 1000; if (rem <= 0) { stop(); return; } v = timerGain(rem, S.vol); }
   if (E.end || $('bb-now')) updateStatus();
   E.master.gain.setTargetAtTime(volGain(v), now, 0.3);
 }
-function play() {
-  if (D.on) dirigentStop();
-  clearTimeout(E.stopTo);
-  if (!E.ac) { E.ac = new (window.AudioContext || window.webkitAudioContext)(); E.master = makeMaster(E.ac); }
-  if (E.ac.state !== 'running') E.ac.resume();
-  E.playing = true; E.end = S.timerMin ? Date.now() + S.timerMin * 60000 : 0;
+// mode = true: ein Modus (Flow-Timer) spielt ueber E.over, ohne Einschlaf-Timer.
+function play(mode) {
+  if (!mode) { stopModes('maler'); E.over = null; E.fade = 1; }
+  ensureAudio();
+  E.playing = true; E.end = !mode && S.timerMin ? Date.now() + S.timerMin * 60000 : 0;
   ORDER.forEach(applyLayer); clearInterval(E.timer); E.timer = setInterval(tick, 100); tick();
-  if (NATIVE && NATIVE.setKeepScreenOn) NATIVE.setKeepScreenOn(true);
+  keepOn(true);
   updateStatus();
 }
 function stop() {
   if (!E.playing) return;
   E.playing = false; clearInterval(E.timer); E.end = 0;
-  E.master.gain.cancelScheduledValues(E.ac.currentTime); E.master.gain.setTargetAtTime(0, E.ac.currentTime, 0.15);
-  E.stopTo = setTimeout(() => { ORDER.forEach(applyLayer); if (!E.playing && !D.on) E.ac.suspend(); }, 700);
-  if (NATIVE && NATIVE.setKeepScreenOn) NATIVE.setKeepScreenOn(false);
+  if (M.on) ORDER.forEach(applyLayer);          // der Klangmaler spielt weiter: nur die Ebenen ausblenden
+  else { masterTo(0, 0.15); E.stopTo = setTimeout(() => { ORDER.forEach(applyLayer); idle(); }, 700); }
+  if (!M.on) keepOn(false);
   if (!$('night').hidden) nightOff();
   updateStatus();
 }
@@ -336,9 +367,7 @@ function dirigentSummary(rates) {
 }
 const D = { on: false, tracker: null, nodes: null, t0: 0, end: 0, phase: 0, rates: [], handler: null, timer: 0, got: 0, lastTick: 0, result: null };
 function dirigentStart() {
-  if (E.playing) stop(); clearTimeout(E.stopTo);
-  if (!E.ac) { E.ac = new (window.AudioContext || window.webkitAudioContext)(); E.master = makeMaster(E.ac); }
-  if (E.ac.state !== 'running') E.ac.resume();
+  stopModes('atem'); if (E.playing) stop(); ensureAudio();
   const ac = E.ac, g = ac.createGain(), f = ac.createBiquadFilter(), src = loopSource(ac, 'braun'), gp = ac.createGain(), fp = ac.createBiquadFilter();
   f.type = 'lowpass'; f.frequency.value = 500; g.gain.value = 0.3; src.connect(f); f.connect(g); g.connect(E.master);
   const root = midiHz(S.layers.drone.root), oscs = [1, 1.5, 2].map((m, i) => { const o = ac.createOscillator(), a = ac.createGain(); o.frequency.value = root * m; a.gain.value = [0.5, 0.22, 0.12][i]; o.connect(a); a.connect(fp); o.start(); return o; });
@@ -374,7 +403,7 @@ function dirigentTick() {
 function dirigentStop(fehler) {
   if (!D.on) return;
   D.on = false; clearInterval(D.timer); window.removeEventListener('devicemotion', D.handler);
-  const n = D.nodes; fadeOut(E.ac, n.g, n.srcs); n.gp.gain.setTargetAtTime(0, E.ac.currentTime, 0.12); setTimeout(() => { try { n.gp.disconnect(); } catch (e) {} if (!E.playing && !D.on) E.ac.suspend(); }, 950);
+  const n = D.nodes; fadeOut(E.ac, n.g, n.srcs); n.gp.gain.setTargetAtTime(0, E.ac.currentTime, 0.12); setTimeout(() => { try { n.gp.disconnect(); } catch (e) {} idle(); }, 950);
   if (NATIVE && NATIVE.setKeepScreenOn) NATIVE.setKeepScreenOn(false);
   const sum = dirigentSummary(D.rates), min = Math.round((Date.now() - D.t0) / 6000) / 10;
   D.result = fehler ? { fehler } : { min, sum };
@@ -382,8 +411,241 @@ function dirigentStop(fehler) {
   if ((location.hash || '') === '#atem') render('atem');
 }
 
+// ---------------------------------------------------------------- Flow-Timer
+// Fokus-Bloecke mit Klang, dazwischen Pausen; ein Gong markiert jeden Wechsel.
+// Die Regeln sind rein (Zeiten in Sekunden) und im Selbsttest.
+function flowPlan(c) { const out = []; for (let i = 0; i < c.runden; i++) { out.push({ kind: 'fokus', sec: c.fokus * 60 }); if (i < c.runden - 1) out.push({ kind: 'pause', sec: c.pause * 60 }); } return out; }
+function flowAt(plan, el) {
+  let a = 0, runde = 0;
+  for (let i = 0; i < plan.length; i++) { if (plan[i].kind === 'fokus') runde++; if (el < a + plan[i].sec) return { done: false, idx: i, kind: plan[i].kind, into: el - a, remain: a + plan[i].sec - el, sec: plan[i].sec, runde }; a += plan[i].sec; }
+  return { done: true, idx: plan.length, runde };
+}
+// Ein Abschnitt blendet in 3 s ein und in den letzten 8 s aus.
+function flowFade(into, remain) { return clamp(Math.min(into / 3, remain / 8), 0, 1); }
+// Wie viele Sekunden Fokus stecken in el Sekunden Ablauf?
+function flowFocusSec(plan, el) { let a = 0, f = 0; plan.forEach(s => { if (s.kind === 'fokus') f += clamp(el - a, 0, s.sec); a += s.sec; }); return f; }
+// Mischung ueber ihren Namen finden: 'b:Fokus' (fertig) oder 'o:Name' (eigene). null, wenn es sie nicht mehr gibt.
+function mixByRef(ref, own) { const l = String(ref)[0] === 'o' ? own : PRESETS, m = l.find(p => p.name === String(ref).slice(2)); return m ? m.layers : null; }
+function mixRefs() { return PRESETS.map(p => ['b:' + p.name, p.name]).concat(S.own.map(p => ['o:' + p.name, p.name])); }
+const F = { on: false, plan: [], t0: 0, idx: -1, timer: 0, result: null };
+// Gong am Master vorbei (der ist am Wechsel gerade ausgeblendet). n Schlaege.
+function gong(n) {
+  const ac = E.ac, g = ac.createGain(); g.gain.value = volGain(S.vol) * 0.6 + 0.05; g.connect(ac.destination); E.hold = Date.now() + n * 700 + 3200;
+  for (let k = 0; k < n; k++) { const t = ac.currentTime + 0.05 + k * 0.7, e = ac.createGain();
+    e.gain.setValueAtTime(0, t); e.gain.linearRampToValueAtTime(0.3, t + 0.01); e.gain.exponentialRampToValueAtTime(0.0008, t + 2.6); e.connect(g);
+    [[660, 1], [1323, 0.2], [1986, 0.07]].forEach(h => { const o = ac.createOscillator(), a = ac.createGain(); o.frequency.value = h[0]; a.gain.value = h[1]; o.connect(a); a.connect(e); o.start(t); o.stop(t + 2.7); }); }
+  setTimeout(() => { try { g.disconnect(); } catch (e) {} }, n * 700 + 3200);
+}
+function flowStart() {
+  stopModes('flow'); if (E.playing) stop();
+  E.over = defLayers(); E.fade = 0; play(true);
+  Object.assign(F, { on: true, plan: flowPlan(S.flow), t0: Date.now(), idx: -1, result: null }); F.timer = setInterval(flowTick, 200);
+  render('flow');
+}
+function flowTick() {
+  if (!F.on) return;
+  const el = (Date.now() - F.t0) / 1000, st = flowAt(F.plan, el);
+  if (st.done) { gong(3); flowStop(true); return; }
+  if (st.idx !== F.idx) {
+    F.idx = st.idx;
+    E.over = normLayers(st.kind === 'fokus' ? (mixByRef(S.flow.mix, S.own) || PRESETS[2].layers) : (S.flow.pauseMix && mixByRef(S.flow.pauseMix, S.own)) || defLayers());
+    ORDER.forEach(applyLayer); if (st.idx > 0) gong(st.kind === 'fokus' ? 2 : 1);
+  }
+  E.fade = flowFade(st.into, st.remain);
+  if ($('f-left')) {
+    $('f-kind').textContent = (st.kind === 'fokus' ? 'Fokus' : 'Pause') + ' · Runde ' + st.runde + ' von ' + S.flow.runden;
+    $('f-left').textContent = fmtClock(st.remain); $('f-bar').style.width = (100 * st.into / st.sec).toFixed(1) + '%';
+    const nx = F.plan[st.idx + 1]; $('f-msg').textContent = nx ? 'danach ' + (nx.kind === 'fokus' ? 'Fokus' : 'Pause') + ', ' + Math.round(nx.sec / 60) + ' min' : 'danach fertig';
+  }
+}
+function flowStop(fertig) {
+  if (!F.on) return;
+  F.on = false; clearInterval(F.timer);
+  const el = (Date.now() - F.t0) / 1000, min = Math.round(flowFocusSec(F.plan, el) / 60);
+  F.result = { min, fertig: !!fertig };
+  if (min >= 1) { S.flow.log.push({ d: new Date().toISOString().slice(0, 10), min }); S.flow.log = S.flow.log.slice(-40); save(); }
+  stop(); E.over = null; E.fade = 1;
+  if ((location.hash || '') === '#flow') render('flow');
+}
+
+// ---------------------------------------------------------------- Herzschlag-Musik
+// Musik im Tempo des eigenen Pulses: ein weicher Herzschlag, darueber eine zufaellige
+// Melodie in der Tonart des Klangteppichs. Den Puls tippt man mit oder stellt ihn ein.
+// Tempo aus Tipp-Zeitpunkten (ms): Median der letzten Abstaende; null, solange es zu wenige oder unplausible sind.
+function tapBpm(times) {
+  if (times.length < 4) return null;
+  const iv = []; for (let i = Math.max(1, times.length - 8); i < times.length; i++) iv.push(times[i] - times[i - 1]);
+  const bpm = 60000 / medianOf(iv); return bpm >= 35 && bpm <= 200 ? Math.round(bpm) : null;
+}
+// Tempo nach sec Sekunden: gehalten, oder in den ersten 70 % der Dauer gleichmaessig zum Ziel hinunter.
+function pulsTempo(c, sec) { if (c.modus !== 'ruhe' || c.ziel >= c.bpm) return c.bpm; return c.bpm + (c.ziel - c.bpm) * clamp(sec / (c.min * 60 * 0.7), 0, 1); }
+const PULS_STEPS = [0, 1, 1, -1, -1, 2, -2];
+function buildPuls(ac, out, c, root, rnd) {
+  const g = ac.createGain(), lp = ac.createBiquadFilter(), dl = ac.createDelay(1), fb = ac.createGain(), pad = ac.createGain();
+  g.gain.value = 0; g.gain.setTargetAtTime(1, ac.currentTime, 0.4); g.connect(out);
+  lp.type = 'lowpass'; lp.frequency.value = 1800; lp.connect(g); dl.delayTime.value = 0.41; fb.gain.value = 0.3; lp.connect(dl); dl.connect(fb); fb.connect(dl); dl.connect(g);
+  pad.gain.value = 0.09; pad.connect(lp);
+  const padO = [1, 1.5].map(m => { const o = ac.createOscillator(); o.frequency.value = root * m; o.connect(pad); o.start(); return o; });
+  const t0 = ac.currentTime; let next = t0 + 0.15, step = 2;
+  const thump = (t, amp, hz) => { const o = ac.createOscillator(), e = ac.createGain(); o.frequency.setValueAtTime(hz, t); o.frequency.exponentialRampToValueAtTime(hz * 0.6, t + 0.12);
+    e.gain.setValueAtTime(0, t); e.gain.linearRampToValueAtTime(amp, t + 0.012); e.gain.exponentialRampToValueAtTime(0.001, t + 0.16); o.connect(e); e.connect(g); o.start(t); o.stop(t + 0.2); };
+  const L = { beats: [], bpm: c.bpm,
+    tick(now) {
+      if (next < now) next = now + 0.02;
+      while (next < now + 0.3) {
+        L.bpm = pulsTempo(c, next - t0); const per = 60 / L.bpm; L.beats.push(next);
+        thump(next, 0.5, 62); thump(next + Math.min(0.32, per * 0.36), 0.3, 74);          // lub-dub
+        if (rnd() < 0.6) {                                                                // Melodieton: kleiner Schritt in der Pentatonik
+          step = clamp(step + PULS_STEPS[Math.floor(rnd() * PULS_STEPS.length)], 0, PENTA.length - 1);
+          const o = ac.createOscillator(), e = ac.createGain(), dec = Math.max(0.9, per * 1.8); o.type = 'triangle'; o.frequency.value = bellHz(root, step) / 2;
+          e.gain.setValueAtTime(0, next); e.gain.linearRampToValueAtTime(0.13, next + 0.02); e.gain.exponentialRampToValueAtTime(0.001, next + dec); o.connect(e); e.connect(lp); o.start(next); o.stop(next + dec + 0.05);
+        }
+        next += per;
+      }
+    },
+    stop() { fadeOut(ac, g, padO); } };
+  return L;
+}
+const H = { on: false, L: null, t0: 0, end: 0, timer: 0, taps: [], result: null };
+function pulsStart() {
+  stopModes('puls'); if (E.playing) stop(); const ac = ensureAudio();
+  masterTo(volGain(S.vol), 0.5);
+  Object.assign(H, { on: true, L: buildPuls(ac, E.master, Object.assign({}, S.puls), midiHz(S.layers.drone.root), Math.random), t0: Date.now(), end: Date.now() + S.puls.min * 60000, result: null });
+  H.timer = setInterval(pulsTick, 100); keepOn(true); render('puls');
+}
+function pulsTick() {
+  if (!H.on) return;
+  const rem = (H.end - Date.now()) / 1000; if (rem <= 0) { pulsStop(true); return; }
+  H.L.tick(E.ac.currentTime); E.master.gain.setTargetAtTime(volGain(timerGain(rem, S.vol)), E.ac.currentTime, 0.3);
+  if ($('hp-now')) { $('hp-now').textContent = Math.round(H.L.bpm); $('hp-left').textContent = 'noch ' + fmtClock(rem); }
+}
+function pulsStop(fertig) {
+  if (!H.on) return;
+  H.on = false; clearInterval(H.timer); H.L.stop(); keepOn(false); setTimeout(idle, 950);
+  H.result = { min: Math.round((Date.now() - H.t0) / 6000) / 10, bpm: Math.round(H.L.bpm), fertig: !!fertig };
+  if ((location.hash || '') === '#puls') render('puls');
+}
+
+// ---------------------------------------------------------------- Klangmaler
+// Wischen formt den Klang: links-rechts die Tonhoehe (immer in der Tonart, deshalb klingt
+// nichts schief), oben-unten hell-dunkel. Kippen schiebt den Klang nach links oder rechts
+// und regelt das Echo. Bis zu vier Finger zugleich.
+const MALER = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];          // Dur-Pentatonik ueber zwei Oktaven
+function malerStep(x) { return clamp(Math.floor(clamp(x, 0, 1) * MALER.length), 0, MALER.length - 1); }
+function malerHz(root, step) { return root * 2 * Math.pow(2, MALER[step] / 12); }
+function malerCut(y) { return 400 * Math.pow(12, 1 - clamp(y, 0, 1)); }          // oben (y = 0) 4800 Hz, unten 400 Hz
+function tiltPan(ax) { return clamp(-ax / 6, -1, 1); }                            // rechte Kante nach unten -> Klang nach rechts
+function tiltEcho(ay) { return clamp(0.2 + ay / 9, 0.1, 0.75); }                  // oberes Ende anheben -> mehr Echo
+function malerVoice(ac, out, hz, cut) {
+  const o = ac.createOscillator(), o2 = ac.createOscillator(), a2 = ac.createGain(), f = ac.createBiquadFilter(), e = ac.createGain(), pan = ac.createStereoPanner ? ac.createStereoPanner() : null;
+  o.type = 'triangle'; o.frequency.value = hz; o2.frequency.value = hz * 2.004; a2.gain.value = 0.18; f.type = 'lowpass'; f.frequency.value = cut; f.Q.value = 2;
+  e.gain.value = 0; e.gain.setTargetAtTime(0.2, ac.currentTime, 0.03);
+  o.connect(f); o2.connect(a2); a2.connect(f); f.connect(e); if (pan) { e.connect(pan); pan.connect(out); } else e.connect(out); o.start(); o2.start();
+  return { set(h, c) { setP(o.frequency, h, ac, 0.035); setP(o2.frequency, h * 2.004, ac, 0.035); setP(f.frequency, c, ac, 0.05); },
+    pan(v) { if (pan) setP(pan.pan, v, ac, 0.1); },
+    off() { e.gain.cancelScheduledValues(ac.currentTime); e.gain.setTargetAtTime(0, ac.currentTime, 0.18); setTimeout(() => { [o, o2].forEach(x => { try { x.stop(); } catch (er) {} }); try { (pan || e).disconnect(); } catch (er) {} }, 1300); } };
+}
+const M = { on: false, bus: null, send: null, nodes: [], voices: {}, pan: 0, handler: null, drone: null };
+function malerStart() {
+  if (M.on) return; stopModes('maler'); const ac = ensureAudio();
+  if (!E.playing) masterTo(volGain(S.vol), 0.2);
+  const bus = ac.createGain(), send = ac.createGain(), dl = ac.createDelay(1), fb = ac.createGain(), lp = ac.createBiquadFilter();
+  bus.gain.value = 1; send.gain.value = 0.3; dl.delayTime.value = 0.33; fb.gain.value = 0.45; lp.type = 'lowpass'; lp.frequency.value = 2400;
+  bus.connect(E.master); bus.connect(send); send.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); lp.connect(E.master);
+  Object.assign(M, { on: true, bus, send, nodes: [bus, send, dl, fb, lp], voices: {}, pan: 0 });
+  M.handler = e => { const a = e.accelerationIncludingGravity; if (!a || a.x == null) return; M.pan = tiltPan(a.x); Object.keys(M.voices).forEach(k => M.voices[k].pan(M.pan)); setP(M.send.gain, tiltEcho(a.y), ac, 0.2); };
+  window.addEventListener('devicemotion', M.handler); keepOn(true); malerDrone();
+}
+function malerDrone() {
+  if (M.drone) { M.drone.stop(); M.drone = null; }
+  if (M.on && S.maler.teppich) M.drone = LAYERS.drone.build(E.ac, E.master, { on: true, vol: 0.45, root: S.layers.drone.root, hell: 0.25 }, ctxApi);
+}
+function malerStop() {
+  if (!M.on) return;
+  M.on = false; window.removeEventListener('devicemotion', M.handler);
+  Object.keys(M.voices).forEach(k => M.voices[k].off()); M.voices = {}; if (M.drone) { M.drone.stop(); M.drone = null; }
+  const n = M.nodes; setTimeout(() => { n.forEach(x => { try { x.disconnect(); } catch (e) {} }); idle(); }, 1400);
+  if (!E.playing) { masterTo(0, 0.4); keepOn(false); }
+}
+function malerTouch(kind, id, x, y) {
+  if (kind === 'down') { if (!M.on) malerStart(); if (Object.keys(M.voices).length >= 4 || M.voices[id]) return false; const v = malerVoice(E.ac, M.bus, malerHz(midiHz(S.layers.drone.root), malerStep(x)), malerCut(y)); v.pan(M.pan); M.voices[id] = v; return true; }
+  const v = M.voices[id]; if (!v) return false;
+  if (kind === 'move') v.set(malerHz(midiHz(S.layers.drone.root), malerStep(x)), malerCut(y)); else { v.off(); delete M.voices[id]; }
+  return true;
+}
+
 // ---------------------------------------------------------------- Ansichten
 const view = $('view'), VIEWS = {};
+const chipRow = (attr, opts, cur) => '<div class="chips">' + opts.map(o => '<button class="chip' + (o[0] === cur ? ' on' : '') + '" ' + attr + '="' + esc(o[0]) + '">' + esc(o[1]) + '</button>').join('') + '</div>';
+const onAll = (sel, fn) => view.querySelectorAll(sel).forEach(b => b.onclick = () => fn(b));
+VIEWS.flow = () => {
+  const c = S.flow;
+  if (F.on) {
+    view.innerHTML = '<div class="card" style="text-align:center"><div class="muted small" id="f-kind"></div><div class="bigno" id="f-left">–</div><div class="bar"><i id="f-bar"></i></div><div class="muted small" id="f-msg"></div><button class="block" id="f-stop">Beenden</button></div>' +
+      '<div class="muted small">Leg das Handy weg. Ein Gong sagt dir, wann die Pause beginnt (einmal), wann es weitergeht (zweimal) und wann du fertig bist (dreimal).</div>';
+    $('f-stop').onclick = () => flowStop(); flowTick(); return;
+  }
+  if (!mixByRef(c.mix, S.own)) c.mix = 'b:Fokus'; if (c.pauseMix && !mixByRef(c.pauseMix, S.own)) c.pauseMix = '';
+  const heute = new Date().toISOString().slice(0, 10), sumH = c.log.filter(x => x.d === heute).reduce((a, x) => a + x.min, 0);
+  let h = '';
+  if (F.result) h += '<div class="card"><h2>' + (F.result.fertig ? 'Geschafft' : 'Beendet') + '</h2><div style="font-size:28px;font-weight:700">' + F.result.min + ' min Fokus</div>' + (F.result.min < 1 ? '<div class="muted small">Unter einer Minute wird nicht gezählt.</div>' : '') + '</div>';
+  h += '<div class="card"><h2>Fokus-Blöcke</h2><label class="f" style="margin-top:0">Fokus</label>' + chipRow('data-ff', [15, 25, 45, 50, 90].map(m => [m, m + ' min']), c.fokus) +
+    '<label class="f">Pause</label>' + chipRow('data-fp', [3, 5, 10, 15].map(m => [m, m + ' min']), c.pause) +
+    '<label class="f">Runden</label>' + chipRow('data-fr', [1, 2, 3, 4].map(m => [m, String(m)]), c.runden) +
+    '<label class="f">Klang im Fokus</label>' + chipRow('data-fm', mixRefs(), c.mix) +
+    '<label class="f">Klang in der Pause</label>' + chipRow('data-fq', [['', 'Stille']].concat(mixRefs()), c.pauseMix) +
+    '<div class="muted small" style="margin-top:10px">Zusammen ' + Math.round(flowPlan(c).reduce((a, x) => a + x.sec, 0) / 60) + ' min, davon ' + c.fokus * c.runden + ' min Fokus.</div><button class="primary block" id="f-go">Start</button></div>';
+  if (c.log.length) h += '<div class="card"><h2>Bisher</h2><div class="small" style="margin-bottom:4px">Heute: <b>' + sumH + ' min</b> Fokus</div>' + c.log.slice().reverse().slice(0, 8).map(x => '<div class="row" style="padding:4px 0"><span class="grow">' + x.d.slice(8, 10) + '.' + x.d.slice(5, 7) + '.</span><span class="muted small">' + x.min + ' min</span></div>').join('') + '</div>';
+  h += '<div class="muted small">Der Klang gehört zur Arbeit, die Stille zur Pause: So merkt der Kopf den Wechsel von selbst. Der Timer läuft, solange diese Seite offen ist; das Display bleibt dafür an.</div>';
+  view.innerHTML = h;
+  const set = (k, num) => b => { c[k] = num ? +b.getAttribute('data-' + num) : b.getAttribute('data-f' + (k === 'mix' ? 'm' : 'q')); save(); F.result = null; render('flow'); };
+  onAll('[data-ff]', set('fokus', 'ff')); onAll('[data-fp]', set('pause', 'fp')); onAll('[data-fr]', set('runden', 'fr')); onAll('[data-fm]', set('mix')); onAll('[data-fq]', set('pauseMix'));
+  $('f-go').onclick = flowStart;
+};
+VIEWS.puls = () => {
+  const c = S.puls;
+  if (H.on) {
+    view.innerHTML = '<div class="card" style="text-align:center"><div class="muted small">Schläge pro Minute</div><div class="bigno" id="hp-now">' + Math.round(H.L.bpm) + '</div><div class="muted small" id="hp-left"></div><button class="block" id="hp-stop">Beenden</button></div>' +
+      '<div class="muted small">' + (c.modus === 'ruhe' && c.ziel < c.bpm ? 'Die Musik wird langsam ruhiger, bis ' + c.ziel + ' Schläge pro Minute. Atme ruhig und lass dich mitnehmen.' : 'Die Musik bleibt in deinem Tempo.') + '</div>';
+    $('hp-stop').onclick = () => pulsStop(); return;
+  }
+  let h = '';
+  if (H.result) h += '<div class="card"><h2>' + (H.result.fertig ? 'Fertig' : 'Beendet') + '</h2><div class="small">' + fmtNum(H.result.min) + ' min, zuletzt ' + H.result.bpm + ' Schläge pro Minute.</div></div>';
+  h += '<div class="card"><h2>Dein Puls</h2><div style="text-align:center"><span class="bigno" id="hp-bpm">' + c.bpm + '</span> <span class="muted">pro Minute</span></div>' +
+    '<button id="h-tap">Fühl deinen Puls am Hals und tippe hier bei jedem Schlag mit</button><div class="muted small" id="hp-tapmsg" style="margin-top:6px;min-height:20px">Ab vier Tippern steht das Tempo.</div>' +
+    '<label class="f">oder von Hand einstellen</label><input type="range" id="hp-sl" min="40" max="140" step="1" value="' + c.bpm + '"></div>';
+  h += '<div class="card"><h2>Die Musik</h2>' + chipRow('data-hm', [['halten', 'bleibt in meinem Tempo'], ['ruhe', 'führt mich zur Ruhe']], c.modus) +
+    (c.modus === 'ruhe' ? '<label class="f">Ziel (Schläge pro Minute)</label>' + chipRow('data-hz', [50, 55, 60, 65].map(m => [m, String(m)]), c.ziel) : '') +
+    '<label class="f">Dauer</label>' + chipRow('data-hd', [5, 10, 15, 20].map(m => [m, m + ' min']), c.min) + '<button class="primary block" id="hp-go">Start</button></div>';
+  h += '<div class="muted small">Die Tonart ist die des Klangteppichs. Den Puls misst die App nicht selbst: Du tippst ihn mit oder übernimmst die Zahl aus der Puls-Messung im Körper-Labor. Dass ruhiger werdende Musik den Puls mitnimmt, ist plausibel, aber nicht gesichert; die Musik folgt deinem Herzen nach dem Start nicht mehr.</div>';
+  view.innerHTML = h;
+  $('h-tap').addEventListener('pointerdown', e => {
+    e.preventDefault(); const now = performance.now(); if (H.taps.length && now - H.taps[H.taps.length - 1] > 2500) H.taps = [];
+    H.taps.push(now); const b = tapBpm(H.taps);
+    if (b) { c.bpm = clamp(b, 40, 140); save(); $('hp-bpm').textContent = c.bpm; $('hp-sl').value = c.bpm; $('hp-tapmsg').textContent = 'Tempo übernommen. Tippe weiter, um es zu verfeinern.'; }
+    else $('hp-tapmsg').textContent = H.taps.length < 4 ? 'Noch ' + (4 - H.taps.length) + ' …' : 'Das war kein gleichmäßiger Puls. Tippe einfach weiter.';
+  });
+  $('hp-sl').oninput = e => { c.bpm = +e.target.value; save(); $('hp-bpm').textContent = c.bpm; H.taps = []; };
+  onAll('[data-hm]', b => { c.modus = b.dataset.hm; save(); render('puls'); }); onAll('[data-hz]', b => { c.ziel = +b.dataset.hz; save(); render('puls'); }); onAll('[data-hd]', b => { c.min = +b.dataset.hd; save(); render('puls'); });
+  $('hp-go').onclick = pulsStart;
+};
+VIEWS.maler = () => {
+  const c = S.maler, n = MALER.length;
+  view.innerHTML = '<div id="pad">' + MALER.map((m, i) => i ? '<div class="col' + (m % 12 === 0 ? ' root' : '') + '" style="left:' + (100 * i / n) + '%"></div>' : '').join('') + '<div class="hint" id="pad-hint">Tippen und wischen.<br>Links tief, rechts hoch. Oben hell, unten dunkel.<br>Bis zu vier Finger.</div></div>' +
+    '<div class="card"><label class="f" style="margin-top:0">Tonart</label>' + chipRow('data-mr', ROOTS.map(r => [r[1], r[0]]), S.layers.drone.root) +
+    '<div class="row" style="margin-top:10px"><span class="lname">Klangteppich darunter</span><label class="sw"><input type="checkbox" id="m-tep"' + (c.teppich ? ' checked' : '') + '><i></i></label></div></div>' +
+    '<div class="muted small">Jede Stelle ist ein Ton der Tonart, deshalb passt alles zusammen. Kippen nach links oder rechts schiebt den Klang zur Seite, das obere Ende anheben gibt mehr Echo. Läuft gerade eine Mischung, malst du darüber.</div>';
+  const pad = $('pad'), dots = {};
+  const xy = e => { const r = pad.getBoundingClientRect(); return [clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1)]; };
+  const place = (d, p) => { d.style.left = p[0] * 100 + '%'; d.style.top = p[1] * 100 + '%'; };
+  pad.addEventListener('pointerdown', e => { e.preventDefault(); const p = xy(e); if (!malerTouch('down', e.pointerId, p[0], p[1])) return; try { pad.setPointerCapture(e.pointerId); } catch (er) {}
+    $('pad-hint').style.display = 'none'; const d = document.createElement('div'); d.className = 'dot'; place(d, p); pad.appendChild(d); dots[e.pointerId] = d; });
+  pad.addEventListener('pointermove', e => { const p = xy(e); if (malerTouch('move', e.pointerId, p[0], p[1])) place(dots[e.pointerId], p); });
+  const up = e => { if (malerTouch('up', e.pointerId) && dots[e.pointerId]) { dots[e.pointerId].remove(); delete dots[e.pointerId]; } };
+  pad.addEventListener('pointerup', up); pad.addEventListener('pointercancel', up);
+  onAll('[data-mr]', b => { S.layers.drone.root = +b.dataset.mr; save(); applyLayer('drone'); applyLayer('glocken'); malerDrone(); view.querySelectorAll('[data-mr]').forEach(x => x.classList.toggle('on', x === b)); });
+  $('m-tep').onchange = e => { c.teppich = e.target.checked; save(); if (c.teppich && !M.on) malerStart(); else malerDrone(); };
+};
 VIEWS.atem = () => {
   const c = S.dirigent;
   if (D.on) {
@@ -445,7 +707,8 @@ VIEWS.home = () => {
   ORDER.forEach(id => { const p = S.layers[id];
     h += '<div class="card' + (p.on ? '' : ' off') + '" id="c-' + id + '"><div class="row"><span class="lname">' + LAYERS[id].name + '</span><label class="sw"><input type="checkbox" data-on="' + id + '"' + (p.on ? ' checked' : '') + '><i></i></label></div>' +
       (p.on ? layerControls(id, p) : '') + '</div>'; });
-  h += '<button class="block" id="h-atem" style="margin-bottom:10px">Atem-Dirigent: dein Atem steuert den Klang</button>';
+  h += '<div class="card"><h2>Mehr als Mischungen</h2><div class="modes">' + [['atem', 'Atem-Dirigent', 'dein Atem steuert den Klang'], ['flow', 'Flow-Timer', 'Fokus-Blöcke mit Klang und Gong'], ['puls', 'Herzschlag-Musik', 'Musik im Tempo deines Pulses'], ['maler', 'Klangmaler', 'wischen und kippen, immer in der Tonart']]
+    .map(m => '<button id="h-' + m[0] + '"><b>' + m[1] + '</b><span>' + m[2] + '</span></button>').join('') + '</div></div>';
   h += '<div class="row"><button class="grow" id="h-night">Nachtbildschirm</button><button class="grow" id="h-info">Info</button></div>';
   view.innerHTML = h; updateStatus();
 };
@@ -468,7 +731,7 @@ view.addEventListener('click', e => {
   const el = e.target.closest('button'); if (!el) return;
   if (el.id === 'play') { if (E.playing) stop(); else if (anyOn()) play(); else updateStatus(); return; }
   if (el.id === 'h-night') { nightOn(); return; }
-  if (el.id === 'h-atem') { location.hash = 'atem'; return; }
+  if (/^h-(atem|flow|puls|maler)$/.test(el.id)) { location.hash = el.id.slice(2); return; }
   if (el.id === 'h-info') { location.hash = 'info'; return; }
   if (el.id === 'p-save') { saveDialog(); return; }
   if (el.id === 'p-edit') { editDialog(); return; }
@@ -507,18 +770,23 @@ VIEWS.info = () => {
     '<li>Der Nachtbildschirm macht das Display schwarz und dunkel; Tippen beendet ihn. Der Klang läuft, solange die App geöffnet ist.</li>' +
     '<li>Ob der Klang bei ausgeschaltetem Display weiterläuft, hängt vom Handy ab. Verlass dich fürs Einschlafen auf den Nachtbildschirm.</li>' +
     '<li>Für binaurale Beats ist die Studienlage dünn und uneinheitlich. Sieh sie als angenehmen Klang, nicht als Mittel mit sicherer Wirkung. Bei Epilepsie vorher ärztlich nachfragen.</li></ul></div>' +
-    '<div class="muted small">Klangraum v1.2</div>';
+    '<div class="card"><h2>Die Modi</h2><ul class="small">' +
+    '<li><b>Atem-Dirigent:</b> Handy auf dem Bauch, dein Atem steuert die Brandung.</li>' +
+    '<li><b>Flow-Timer:</b> Fokus-Blöcke mit Klang, Pausen in Stille, ein Gong an jedem Wechsel.</li>' +
+    '<li><b>Herzschlag-Musik:</b> ein weicher Herzschlag mit Melodie im Tempo deines Pulses, auf Wunsch langsam ruhiger.</li>' +
+    '<li><b>Klangmaler:</b> ein Instrument zum Wischen und Kippen, das nicht schief klingen kann.</li></ul></div>' +
+    '<div class="muted small">Klangraum v1.3</div>';
 };
 function render(name) {
   if (!VIEWS[name]) name = 'home';
-  $('title').textContent = name === 'info' ? 'Info' : name === 'atem' ? 'Atem-Dirigent' : 'Klangraum'; $('back').style.visibility = name === 'home' ? 'hidden' : 'visible';
+  $('title').textContent = { info: 'Info', atem: 'Atem-Dirigent', flow: 'Flow-Timer', puls: 'Herzschlag-Musik', maler: 'Klangmaler' }[name] || 'Klangraum'; $('back').style.visibility = name === 'home' ? 'hidden' : 'visible';
   VIEWS[name](); if (name !== 'home') window.scrollTo(0, 0);
 }
 function route() {
   const h = (location.hash || '#home').slice(1);
   if (h !== 'night' && !$('night').hidden) nightOff();
-  if (D.on && h !== 'atem') dirigentStop();
-  if (h !== 'atem') D.result = null;
+  stopModes(h); closeModal();
+  if (h !== 'atem') D.result = null; if (h !== 'flow') F.result = null; if (h !== 'puls') { H.result = null; H.taps = []; }
   if (h === 'night') { if ($('night').hidden) { history.replaceState(null, '', '#home'); render('home'); } return; }
   render(h);
 }
@@ -563,6 +831,24 @@ async function krTests() {
   t('Mischungen kennen nur vorhandene Ebenen und Regler', PRESETS.every(p => ORDER.every(id => Object.keys(p.layers[id]).sort().join() === Object.keys(LAYERS[id].def).sort().join())) && PRESETS.every(p => ORDER.some(id => p.layers[id].on)));
   t('normLayers fuellt fehlende Regler auf', normLayers({ noise: { on: true } }).noise.ton === 0.55 && normLayers(null).regen.on === false);
 
+  // Flow-Timer
+  const fp = flowPlan({ fokus: 25, pause: 5, runden: 3 });
+  t('Flow: Plan aus Fokus und Pausen, endet mit Fokus', fp.map(x => x.kind[0] + x.sec / 60).join() === 'f25,p5,f25,p5,f25' && flowPlan({ fokus: 50, pause: 10, runden: 1 }).length === 1);
+  const fa = flowAt(fp, 1500 + 120), fb2 = flowAt(fp, 0), fc = flowAt(fp, 85 * 60);
+  t('Flow: Abschnitt, Rest und Runde zu jeder Zeit', fa.kind === 'pause' && fa.idx === 1 && fa.into === 120 && fa.remain === 180 && fa.runde === 1 && fb2.kind === 'fokus' && fb2.remain === 1500 && fc.done && fc.runde === 3 && flowAt(fp, 1800).runde === 2 && !flowAt(fp, 85 * 60 - 1).done);
+  t('Flow: ein- und ausblenden', flowFade(0, 1500) === 0 && flowFade(3, 1500) === 1 && flowFade(700, 4) === 0.5 && flowFade(700, 0) === 0 && flowFade(1.5, 1.5) === 0.1875);
+  t('Flow: Fokus-Minuten zählen keine Pausen', flowFocusSec(fp, 0) === 0 && flowFocusSec(fp, 1500 + 200) === 1500 && flowFocusSec(fp, 1800 + 60) === 1560 && flowFocusSec(fp, 99999) === 4500);
+  t('Flow: Mischung über den Namen, auch eigene, sonst null', mixByRef('b:Fokus', []) === PRESETS[2].layers && mixByRef('o:Meins', [{ name: 'Meins', layers: 7 }]) === 7 && mixByRef('o:Weg', []) === null && mixByRef('b:Gibtsnicht', []) === null && mixByRef('', []) === null);
+  // Herzschlag-Musik
+  const taps = k => Array.from({ length: k }, (x, i) => i * 800 + (i % 2 ? 12 : -9));
+  t('Puls tippen: ab vier Tippern, Median gegen Ausreißer', tapBpm(taps(3)) === null && Math.abs(tapBpm(taps(8)) - 75) <= 2 && tapBpm([0, 800, 1600, 2400, 4000, 4800, 5600]) === 75 && tapBpm([0, 100, 200, 300, 400]) === null && tapBpm([0, 3000, 6000, 9000]) === null);
+  const pc = { bpm: 80, modus: 'ruhe', ziel: 60, min: 10 };
+  t('Puls-Tempo: halten oder in 70 % der Dauer zum Ziel', pulsTempo(pc, 0) === 80 && pulsTempo(pc, 210) === 70 && pulsTempo(pc, 420) === 60 && pulsTempo(pc, 600) === 60 && pulsTempo(Object.assign({}, pc, { modus: 'halten' }), 300) === 80 && pulsTempo(Object.assign({}, pc, { bpm: 55 }), 300) === 55);
+  // Klangmaler
+  t('Klangmaler: Stelle -> Ton der Tonart', malerStep(0) === 0 && malerStep(1) === 10 && malerStep(0.5) === 5 && malerStep(-3) === 0 && Math.abs(malerHz(110, 0) - 220) < 1e-9 && Math.abs(malerHz(110, 5) - 440) < 1e-9 && Math.abs(malerHz(110, 10) - 880) < 1e-9 &&
+    MALER.every(m => [0, 2, 4, 7, 9].indexOf(m % 12) >= 0));
+  t('Klangmaler: hell-dunkel und Kippen', Math.abs(malerCut(0) - 4800) < 1e-6 && Math.abs(malerCut(1) - 400) < 1e-9 && tiltPan(0) === 0 && tiltPan(-20) === 1 && tiltPan(3) === -0.5 && tiltEcho(0) === 0.2 && tiltEcho(99) === 0.75 && tiltEcho(-99) === 0.1);
+
   // Jede Ebene und jede Mischung 4 s lang ohne Lautsprecher rendern und pruefen.
   const Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   if (!Off) { t('Offline-Rendering verfuegbar', false); return { ok, fail }; }
@@ -584,6 +870,13 @@ async function krTests() {
     let r = null, err = ''; try { r = await renderMix(p.layers); } catch (e) { err = e.message; }
     t('Mischung ' + p.name + ': hoerbar und nicht uebersteuert', r && r.l.rms > 0.004 && r.l.peak < 0.99 && r.r.peak < 0.99, err || (r && r.l.rms.toFixed(3) + ' / ' + Math.max(r.l.peak, r.r.peak).toFixed(2)));
   }
+  // Die neuen Klangquellen ebenfalls ohne Lautsprecher rendern.
+  const renderWith = async fn => { const ac = new Off(2, 44100 * 4, 44100), master = makeMaster(ac); master.gain.value = 1; const x = fn(ac, master); const buf = await ac.startRendering(); return { x, l: stat(buf.getChannelData(0).subarray(22050)), r: stat(buf.getChannelData(1).subarray(22050)) }; };
+  let rp = null; try { rp = await renderWith((ac, m) => { const L = buildPuls(ac, m, { bpm: 90, modus: 'halten', ziel: 60, min: 10 }, 110, rnd); for (let tt = 0; tt < 4; tt += 0.25) L.tick(tt); return L; }); } catch (e) { console.error(e); }
+  const gaps = rp ? rp.x.beats.slice(1).map((b, i) => b - rp.x.beats[i]) : [];
+  t('Herzschlag-Musik: hörbar, begrenzt, Schläge im Takt (90 pro Minute)', rp && rp.l.bad === 0 && rp.l.rms > 0.01 && rp.l.peak < 0.99 && rp.r.peak < 0.99 && gaps.length >= 5 && gaps.every(g => Math.abs(g - 60 / 90) < 1e-6), rp && rp.l.rms.toFixed(3) + ' / ' + rp.l.peak.toFixed(2) + ' / ' + gaps.length + ' Abstände');
+  let rm = null; try { rm = await renderWith((ac, m) => [0, 3, 6, 9].map(st => malerVoice(ac, m, malerHz(110, st), malerCut(0)))); } catch (e) { console.error(e); }
+  t('Klangmaler: vier Stimmen hörbar und nicht übersteuert', rm && rm.l.bad === 0 && rm.l.rms > 0.02 && rm.l.peak < 0.99 && rm.r.peak < 0.99, rm && rm.l.rms.toFixed(3) + ' / ' + rm.l.peak.toFixed(2));
   const all = defLayers(); ORDER.forEach(id => { all[id].on = true; all[id].vol = 1; });
   let r = null; try { r = await renderMix(all); } catch (e) {}
   t('alle Ebenen auf voller Lautstaerke: Begrenzer haelt', r && r.l.peak < 1 && r.r.peak < 1, r && Math.max(r.l.peak, r.r.peak).toFixed(2));

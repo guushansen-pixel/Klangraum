@@ -79,3 +79,27 @@ Bewegungssensor, der auf dem Pixel im WebView nachweislich läuft
 `S.dirigent.min` klein setzen und per Intervall eine Sinusbewegung auf x
 einspeisen. Selbsttest 36/36. Am Körper noch nicht ausprobiert. APK
 `dist/klangraum-1.2.apk`.
+
+v1.3 (code 4, 2026-11-16): die drei Ausbaustufen Flow-Timer (`flowPlan`,
+`flowAt`, `flowFade`, Zustand `F`), Herzschlag-Musik (`tapBpm`, `pulsTempo`,
+`buildPuls`, Zustand `H`) und Klangmaler (`malerVoice`, `malerTouch`,
+Zustand `M`); Beschreibung im README. In einer Cloud-Sitzung gebaut, deshalb
+**noch keine APK**: am Laptop `.\build.ps1 -VersionName 1.3 -VersionCode 4
+-Release`. Selbsttest 47/47 (auch Herzschlag und Klangmaler werden ohne
+Lautsprecher gerendert); alle drei im Browser per Roboter durchgespielt,
+der Flow-Timer mit geraffter Uhr über zwei Runden.
+
+Neue Regeln dabei:
+- Ein Modus holt sich Klang über `ensureAudio()`, meldet sich in `busy()`
+  und `stopModes()` an und endet mit `idle()`. Nie selbst `E.ac.suspend()`
+  rufen: `idle()` wartet einen ausklingenden Gong ab.
+- Der Flow-Timer spielt über `E.over`/`E.fade` durch die normale
+  Wiedergabe; `S.layers` fasst er nicht an.
+- Der Klangmaler ist der einzige Modus, der neben einer laufenden Mischung
+  bestehen darf (`play()` und `stop()` nehmen darauf Rücksicht).
+- Zeitabläufe der Modi rechnen mit `Date.now()`, damit sie sich im Test
+  raffen lassen und ein gedrosselter Timer nichts verschiebt.
+
+Am Gerät offen für v1.3: wie Herzschlag und Klangmaler klingen, ob
+Mehrfinger-Wischen im WebView flüssig ist, die Kipp-Richtungen, und ob der
+Flow-Timer bei 25 Minuten Display-an sauber durchläuft.

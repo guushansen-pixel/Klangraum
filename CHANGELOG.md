@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3 (code 4) – 2026-11-16
+
+- Flow-Timer: Fokus-Blöcke (15 bis 90 min) mit einer Mischung nach Wahl,
+  Pausen in Stille oder mit anderem Klang, bis zu vier Runden, Gong an
+  jedem Wechsel, Fokus-Minuten pro Tag.
+- Herzschlag-Musik: Puls mittippen oder einstellen; ein weicher Herzschlag
+  mit Melodie in diesem Tempo, auf Wunsch gleitend hinunter zu einem Ziel.
+- Klangmaler: Fläche zum Wischen (Tonhöhe in der Tonart, hell–dunkel), bis
+  zu vier Finger, Kippen für Stereo und Echo; malt auch über eine laufende
+  Mischung.
+- Behoben: Wer bei laufender Mischung den Atem-Dirigenten startete, hörte
+  die Mischung darunter weiter.
+- Zurück schließt jetzt auch einen offenen Dialog.
+
 ## 1.2 (code 3) – 2026-11-16
 
 - Atem-Dirigent: Handy auf dem Bauch, der Atem steuert die Brandung; ein
